@@ -70,6 +70,46 @@ const Parts: React.FC = () => {
     fetchParts();
   };
 
+  const importIIF = async (file: File) => {
+    const text = await file.text();
+    const lines = text.split(/\r?\n/).filter(Boolean);
+    
+    let importedCount = 0;
+    let skippedCount = 0;
+    
+    for (const line of lines) {
+      // IIF format: !INVITEM	NAME	DESC	TYPE	ACCNT	ASSETACCNT	COGSACCNT	INCOMEACCNT	INVACCNT	PURCHASEDESC	ONHAND	COST	PRICE	PRICE1	PRICE2	PRICE3	PRICE4	PRICE5	WHOLESALE	UNIT	TAXABLE	PAYMETHOD	REORDERPOINT	EXTRA	VENDOR	USEPRICE	ACCNTTYPE	UOMSETREF	PREFVEND
+      if (line.startsWith('!INVITEM')) continue; // Skip header
+      if (!line.startsWith('INVITEM')) continue; // Only process inventory items
+      
+      const fields = line.split('\t');
+      if (fields.length < 3) continue;
+      
+      const partNumber = fields[1]?.trim(); // NAME field
+      const description = fields[2]?.trim(); // DESC field
+      const unitType = fields[19]?.trim()?.toLowerCase() === 'hours' ? 'hours' : 'qty'; // UNIT field
+      
+      if (!partNumber) continue;
+      
+      const candidate = {
+        partNumber: partNumber,
+        description: description || partNumber,
+        unitType: unitType as 'qty' | 'hours',
+      };
+      
+      const exists = parts.some(p => p.partNumber.trim().toLowerCase() === candidate.partNumber.toLowerCase());
+      if (!exists) {
+        await addDoc(collection(db, 'parts'), candidate);
+        importedCount++;
+      } else {
+        skippedCount++;
+      }
+    }
+    
+    alert(`IIF Import Complete!\nImported: ${importedCount} parts\nSkipped (duplicates): ${skippedCount} parts`);
+    fetchParts();
+  };
+
   const filtered = parts.filter(p =>
     p.partNumber.toLowerCase().includes(search.toLowerCase()) ||
     p.description.toLowerCase().includes(search.toLowerCase())
@@ -80,7 +120,22 @@ const Parts: React.FC = () => {
       <div className="flex justify-between items-center">
         <h1 className="text-3xl font-bold text-white">Parts</h1>
         <div className="flex gap-2">
-          <input type="file" accept=".csv" onChange={(e) => e.target.files && importCSV(e.target.files[0])} className="text-gray-300" />
+          <div className="flex gap-2">
+            <input 
+              type="file" 
+              accept=".csv" 
+              onChange={(e) => e.target.files && importCSV(e.target.files[0])} 
+              className="text-gray-300 text-sm" 
+              title="Import CSV file"
+            />
+            <input 
+              type="file" 
+              accept=".iif" 
+              onChange={(e) => e.target.files && importIIF(e.target.files[0])} 
+              className="text-gray-300 text-sm" 
+              title="Import IIF (QuickBooks) file"
+            />
+          </div>
           <button onClick={() => setShowModal(true)} className="bg-darker-blue hover:bg-blue-700 text-white px-4 py-2 rounded-md">Add Part</button>
         </div>
       </div>
@@ -88,6 +143,15 @@ const Parts: React.FC = () => {
       <div className="flex items-center gap-3">
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search parts..." className="bg-gray-700 text-white px-4 py-2 rounded-md w-64" />
         <span className="text-gray-400">{filtered.length} parts</span>
+      </div>
+
+      <div className="bg-blue-900 bg-opacity-30 border border-blue-700 rounded-lg p-4">
+        <h3 className="text-blue-300 font-semibold mb-2">📥 Import Parts</h3>
+        <div className="text-sm text-gray-300 space-y-1">
+          <p><strong>CSV Format:</strong> partNumber,description,unitType</p>
+          <p><strong>IIF Format:</strong> QuickBooks inventory export (.iif file)</p>
+          <p className="text-xs text-gray-400">Duplicate part numbers will be skipped automatically</p>
+        </div>
       </div>
 
       <div className="bg-gray-800 rounded-lg shadow-lg">
