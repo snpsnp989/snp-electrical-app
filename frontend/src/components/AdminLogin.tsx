@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { getApiUrl } from '../config/api';
 
 interface AdminLoginProps {
   onLogin: (isAuthenticated: boolean, role?: string, name?: string) => void;
@@ -16,9 +17,7 @@ const AdminLogin: React.FC<AdminLoginProps> = ({ onLogin }) => {
     setError('');
 
     try {
-      const apiUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
-        ? 'http://localhost:5001' 
-        : 'http://192.168.0.223:5001';
+      const apiUrl = getApiUrl();
 
       const response = await fetch(`${apiUrl}/api/auth/login`, {
         method: 'POST',
@@ -119,7 +118,7 @@ const AdminLogin: React.FC<AdminLoginProps> = ({ onLogin }) => {
           <div className="text-center">
             <p className="text-sm text-gray-400">
               Admin: snpelec@gmail.com / tech123<br/>
-              Technician: snpsnp989@gmail.com / tech123
+              Technician: snpsnp@gmail.com / tech123
             </p>
           </div>
         </form>

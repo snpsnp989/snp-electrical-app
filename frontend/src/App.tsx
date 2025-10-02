@@ -68,13 +68,8 @@ function App() {
     }} />;
   }
 
-  // Show mobile technician view
-  if (isMobile && userRole === 'technician') {
-    return <TechnicianMobile />;
-  }
-
-  // Force mobile technician view for mobile URLs
-  if (userRole === 'technician' && (window.location.pathname.includes('mobile') || window.location.search.includes('mobile=true'))) {
+  // Show mobile technician view for technicians
+  if (userRole === 'technician') {
     return <TechnicianMobile />;
   }
 
