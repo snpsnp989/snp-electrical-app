@@ -1,0 +1,55 @@
+const express = require('express');
+const cors = require('cors');
+const path = require('path');
+const { db, initDatabase, insertSampleData } = require('./database');
+const jobRoutes = require('./routes/jobs');
+const customerRoutes = require('./routes/customers');
+const technicianRoutes = require('./routes/technicians');
+const reportRoutes = require('./routes/reports');
+const pdfReportRoutes = require('./routes/pdfReports');
+const equipmentRoutes = require('./routes/equipment');
+const emailReportRoutes = require('./routes/emailReports');
+const authRoutes = require('./routes/auth');
+
+const app = express();
+const PORT = process.env.PORT || 5001;
+
+// Middleware
+app.use(cors());
+app.use(express.json());
+app.use(express.static(path.join(__dirname, '../public')));
+
+// Initialize database (ensure creation before inserts)
+db.serialize(() => {
+  initDatabase();
+  insertSampleData();
+});
+
+// Routes
+app.use('/api/jobs', jobRoutes);
+app.use('/api/customers', customerRoutes);
+app.use('/api/technicians', technicianRoutes);
+app.use('/api/reports', reportRoutes);
+app.use('/api/pdf', pdfReportRoutes);
+app.use('/api/equipment', equipmentRoutes);
+app.use('/api', emailReportRoutes);
+app.use('/api/auth', authRoutes);
+
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'OK', message: 'SNP Electrical API is running' });
+});
+
+// Serve React app in production
+if (process.env.NODE_ENV === 'production') {
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, '../frontend/build/index.html'));
+  });
+}
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`SNP Electrical API server running on port ${PORT}`);
+  console.log(`Accessible at: http://192.168.0.223:${PORT}`);
+});
+
+module.exports = app;
