@@ -97,7 +97,7 @@ router.post('/', (req, res) => {
 });
 
 // Update job
-router.put('/:id', (req, res) => {
+router.put('/:id', async (req, res) => {
   const { technician_id, title, description, status, requestedDate, dueDate, clientId, endCustomerId, siteId, siteAddress, siteContact, sitePhone, orderNumber, equipment, faultReported, clientName, endCustomerName, arrivalTime, departureTime, actionTaken, serviceType, partsJson, service_report, photos } = req.body;
   
   console.log('Job update request body:', req.body);
@@ -179,11 +179,36 @@ router.put('/:id', (req, res) => {
   console.log('Final update query:', query);
   console.log('Query parameters:', params);
   
-  db.run(query, params, function(err) {
+  db.run(query, params, async function(err) {
     if (err) {
       res.status(500).json({ error: err.message });
       return;
     }
+
+    // If job was marked as completed, attempt to generate PDF automatically (non-blocking)
+    try {
+      if (status === 'completed') {
+        // Re-fetch job to ensure status persisted and get full details if needed
+        db.get('SELECT id, status FROM jobs WHERE id = ?', [req.params.id], async (e, row) => {
+          if (!e && row && row.status === 'completed') {
+            try {
+              const baseUrl = process.env.RENDER_EXTERNAL_URL || 'https://snp-electrical-app.onrender.com';
+              console.log('Auto-generating PDF for job', req.params.id, 'using URL:', `${baseUrl}/api/pdf/job/${req.params.id}`);
+              // Trigger PDF generation via existing endpoint; ignore result
+              // Use global fetch (Node 18+)
+              fetch(`${baseUrl}/api/pdf/job/${req.params.id}`).catch((err) => {
+                console.error('PDF generation failed:', err);
+              });
+            } catch (genErr) {
+              console.error('Error auto-generating PDF:', genErr);
+            }
+          }
+        });
+      }
+    } catch (outerErr) {
+      console.error('Auto-PDF outer error:', outerErr);
+    }
+
     res.json({ message: 'Job updated successfully' });
   });
 });
@@ -199,6 +224,43 @@ router.delete('/:id', (req, res) => {
     }
     res.json({ message: 'Job deleted successfully' });
   });
+});
+
+// Restore a job to completed by Service Report Number (snpid) and auto-generate PDF
+router.get('/restore-by-snp/:snp', async (req, res) => {
+  const { snp } = req.params;
+  try {
+    db.get('SELECT id, status FROM jobs WHERE snpid = ?', [snp], (err, row) => {
+      if (err) {
+        res.status(500).json({ error: err.message });
+        return;
+      }
+      if (!row) {
+        res.status(404).json({ error: `No job found with Service Report Number ${snp}` });
+        return;
+      }
+      const jobId = row.id;
+      db.run('UPDATE jobs SET status = \'completed\', completed_date = CURRENT_DATE WHERE id = ?', [jobId], (uErr) => {
+        if (uErr) {
+          res.status(500).json({ error: uErr.message });
+          return;
+        }
+        // Fire-and-forget PDF generation
+        try {
+          const baseUrl = process.env.RENDER_EXTERNAL_URL || 'https://snp-electrical-app.onrender.com';
+          console.log('Auto-generating PDF for restored job', jobId, 'using URL:', `${baseUrl}/api/pdf/job/${jobId}`);
+          fetch(`${baseUrl}/api/pdf/job/${jobId}`).catch((err) => {
+            console.error('PDF generation failed for restored job:', err);
+          });
+        } catch (err) {
+          console.error('Error in PDF generation for restored job:', err);
+        }
+        res.json({ message: 'Job restored to completed and PDF generation triggered', jobId, snpid: snp });
+      });
+    });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to restore job' });
+  }
 });
 
 // Test endpoint to add service_type column if missing
