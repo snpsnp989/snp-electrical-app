@@ -14,7 +14,7 @@ const USER_CREDENTIALS = {
     role: 'admin',
     name: 'SNP Admin'
   },
-  'snpsnp989@gmail.com': {
+  'snpsnp@gmail.com': {
     password: 'tech123',
     role: 'technician',
     name: 'Simon Potter'
