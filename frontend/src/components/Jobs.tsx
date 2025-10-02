@@ -3,6 +3,7 @@ import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 import { db } from '../firebase';
 import { collection, getDocs } from 'firebase/firestore';
+import { getApiUrl } from '../config/api';
 
 interface Job {
   id: number;
@@ -94,9 +95,7 @@ const Jobs: React.FC = () => {
 
   const fetchEquipment = async () => {
     try {
-      const apiUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
-        ? 'http://localhost:5001' 
-        : 'http://192.168.0.223:5001';
+      const apiUrl = getApiUrl();
       
       const response = await fetch(`${apiUrl}/api/equipment`);
       if (response.ok) {
@@ -192,9 +191,7 @@ const Jobs: React.FC = () => {
 
   const fetchJobs = async () => {
     try {
-      const apiUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
-        ? 'http://localhost:5001' 
-        : 'http://192.168.0.223:5001';
+      const apiUrl = getApiUrl();
       console.log('Fetching jobs from:', `${apiUrl}/api/jobs`);
       const response = await fetch(`${apiUrl}/api/jobs`);
       console.log('API Response status:', response.status);
@@ -210,9 +207,7 @@ const Jobs: React.FC = () => {
 
   const fetchCustomers = async () => {
     try {
-      const apiUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
-        ? 'http://localhost:5001' 
-        : 'http://192.168.0.223:5001';
+      const apiUrl = getApiUrl();
       const response = await fetch(`${apiUrl}/api/customers`);
       const data = await response.json();
       setCustomers(data);
@@ -223,9 +218,7 @@ const Jobs: React.FC = () => {
 
   const fetchTechnicians = async () => {
     try {
-      const apiUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
-        ? 'http://localhost:5001' 
-        : 'http://192.168.0.223:5001';
+      const apiUrl = getApiUrl();
       const response = await fetch(`${apiUrl}/api/technicians`);
       const data = await response.json();
       setTechnicians(data);
@@ -237,9 +230,7 @@ const Jobs: React.FC = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const apiUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
-        ? 'http://localhost:5001' 
-        : 'http://192.168.0.223:5001';
+      const apiUrl = getApiUrl();
       const url = editingJob
         ? `${apiUrl}/api/jobs/${editingJob.id}`
         : `${apiUrl}/api/jobs`;
@@ -387,9 +378,7 @@ const Jobs: React.FC = () => {
 
   const handleStatusChange = async (jobId: number, newStatus: string) => {
     try {
-      const apiUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
-        ? 'http://localhost:5001' 
-        : 'http://192.168.0.223:5001';
+      const apiUrl = getApiUrl();
       await fetch(`${apiUrl}/api/jobs/${jobId}`, {
         method: 'PUT',
         headers: {
@@ -406,9 +395,7 @@ const Jobs: React.FC = () => {
   const handleDelete = async (jobId: number) => {
     if (!window.confirm('Delete this job? This cannot be undone.')) return;
     try {
-      const apiUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
-        ? 'http://localhost:5001' 
-        : 'http://192.168.0.223:5001';
+      const apiUrl = getApiUrl();
       await fetch(`${apiUrl}/api/jobs/${jobId}`, { method: 'DELETE' });
       fetchJobs();
     } catch (error) {
@@ -419,9 +406,7 @@ const Jobs: React.FC = () => {
 
   const handleGeneratePDF = async (jobId: number) => {
     try {
-      const apiUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
-        ? 'http://localhost:5001' 
-        : 'http://192.168.0.223:5001';
+      const apiUrl = getApiUrl();
       
       const response = await fetch(`${apiUrl}/api/pdf/job/${jobId}`);
       
@@ -459,9 +444,7 @@ const Jobs: React.FC = () => {
 
   const handleViewPDF = async (jobId: number) => {
     try {
-      const apiUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
-        ? 'http://localhost:5001' 
-        : 'http://192.168.0.223:5001';
+      const apiUrl = getApiUrl();
       
       const response = await fetch(`${apiUrl}/api/pdf/job/${jobId}`);
       
@@ -481,9 +464,7 @@ const Jobs: React.FC = () => {
 
   const handleDownloadPDF = async (jobId: number) => {
     try {
-      const apiUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
-        ? 'http://localhost:5001' 
-        : 'http://192.168.0.223:5001';
+      const apiUrl = getApiUrl();
       
       const response = await fetch(`${apiUrl}/api/pdf/job/${jobId}`);
       
@@ -544,9 +525,7 @@ const Jobs: React.FC = () => {
     }
 
     try {
-      const apiUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
-        ? 'http://localhost:5001' 
-        : 'http://192.168.0.223:5001';
+      const apiUrl = getApiUrl();
       
       const response = await fetch(`${apiUrl}/api/send-reports`, {
         method: 'POST',

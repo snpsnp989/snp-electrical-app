@@ -8,6 +8,7 @@ import { db } from '../firebase';
 import { collection, getDocs } from 'firebase/firestore';
 import TechnicianLogin from './TechnicianLogin';
 import PhotoUploadForm from './PhotoUploadForm';
+import { getApiUrl } from '../config/api';
 import TechnicianPerformance from './TechnicianPerformance';
 
 interface Job {
@@ -113,14 +114,7 @@ const TechnicianMobile: React.FC = () => {
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
 
-  // Get the correct API URL based on environment
-  const getApiUrl = () => {
-    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-      return 'http://localhost:5001';
-    }
-    // For production and mobile devices, use the Mac's IP address
-    return 'http://192.168.0.223:5001';
-  };
+  // Use centralized API configuration
 
   // Fetch parts data from Firebase
   const fetchParts = async () => {
