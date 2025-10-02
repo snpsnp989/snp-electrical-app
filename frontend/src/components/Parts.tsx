@@ -77,32 +77,73 @@ const Parts: React.FC = () => {
     let importedCount = 0;
     let skippedCount = 0;
     
-    for (const line of lines) {
-      // IIF format: !INVITEM	NAME	DESC	TYPE	ACCNT	ASSETACCNT	COGSACCNT	INCOMEACCNT	INVACCNT	PURCHASEDESC	ONHAND	COST	PRICE	PRICE1	PRICE2	PRICE3	PRICE4	PRICE5	WHOLESALE	UNIT	TAXABLE	PAYMETHOD	REORDERPOINT	EXTRA	VENDOR	USEPRICE	ACCNTTYPE	UOMSETREF	PREFVEND
-      if (line.startsWith('!INVITEM')) continue; // Skip header
-      if (!line.startsWith('INVITEM')) continue; // Only process inventory items
+    // Check if it's the custom format (comma-separated with Sell Item Code header)
+    const isCustomFormat = lines[0]?.includes('Sell Item Code');
+    
+    if (isCustomFormat) {
+      // Custom format: Sell Item Code, Sell Item Description, Sell Tax Code, Sell Price 1, etc.
+      const [header, ...data] = lines;
+      const cols = header.split('\t');
+      const codeIdx = cols.indexOf('Sell Item Code');
+      const descIdx = cols.indexOf('Sell Item Description');
       
-      const fields = line.split('\t');
-      if (fields.length < 3) continue;
-      
-      const partNumber = fields[1]?.trim(); // NAME field
-      const description = fields[2]?.trim(); // DESC field
-      const unitType = fields[19]?.trim()?.toLowerCase() === 'hours' ? 'hours' : 'qty'; // UNIT field
-      
-      if (!partNumber) continue;
-      
-      const candidate = {
-        partNumber: partNumber,
-        description: description || partNumber,
-        unitType: unitType as 'qty' | 'hours',
-      };
-      
-      const exists = parts.some(p => p.partNumber.trim().toLowerCase() === candidate.partNumber.toLowerCase());
-      if (!exists) {
-        await addDoc(collection(db, 'parts'), candidate);
-        importedCount++;
-      } else {
-        skippedCount++;
+      for (const line of data) {
+        const fields = line.split('\t');
+        if (fields.length < 2) continue;
+        
+        const partNumber = fields[codeIdx]?.trim();
+        const description = fields[descIdx]?.trim();
+        
+        if (!partNumber) continue;
+        
+        // Determine unit type based on description
+        const isLabor = description?.toLowerCase().includes('labour') || 
+                       description?.toLowerCase().includes('service') ||
+                       description?.toLowerCase().includes('call') ||
+                       description?.toLowerCase().includes('installation');
+        
+        const candidate = {
+          partNumber: partNumber,
+          description: description || partNumber,
+          unitType: isLabor ? 'hours' : 'qty' as 'qty' | 'hours',
+        };
+        
+        const exists = parts.some(p => p.partNumber.trim().toLowerCase() === candidate.partNumber.toLowerCase());
+        if (!exists) {
+          await addDoc(collection(db, 'parts'), candidate);
+          importedCount++;
+        } else {
+          skippedCount++;
+        }
+      }
+    } else {
+      // Standard IIF format
+      for (const line of lines) {
+        if (line.startsWith('!INVITEM')) continue; // Skip header
+        if (!line.startsWith('INVITEM')) continue; // Only process inventory items
+        
+        const fields = line.split('\t');
+        if (fields.length < 3) continue;
+        
+        const partNumber = fields[1]?.trim(); // NAME field
+        const description = fields[2]?.trim(); // DESC field
+        const unitType = fields[19]?.trim()?.toLowerCase() === 'hours' ? 'hours' : 'qty'; // UNIT field
+        
+        if (!partNumber) continue;
+        
+        const candidate = {
+          partNumber: partNumber,
+          description: description || partNumber,
+          unitType: unitType as 'qty' | 'hours',
+        };
+        
+        const exists = parts.some(p => p.partNumber.trim().toLowerCase() === candidate.partNumber.toLowerCase());
+        if (!exists) {
+          await addDoc(collection(db, 'parts'), candidate);
+          importedCount++;
+        } else {
+          skippedCount++;
+        }
       }
     }
     
