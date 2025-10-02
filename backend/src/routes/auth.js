@@ -4,6 +4,11 @@ const jwt = require('jsonwebtoken');
 
 // User credentials (in production, these should be stored securely in a database)
 const USER_CREDENTIALS = {
+  'admin@snp.com': {
+    password: 'tech123',
+    role: 'admin',
+    name: 'SNP Admin'
+  },
   'snpelec@gmail.com': {
     password: 'tech123',
     role: 'admin',
