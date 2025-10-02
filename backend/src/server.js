@@ -40,12 +40,8 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'OK', message: 'SNP Electrical API is running' });
 });
 
-// Serve React app in production
-if (process.env.NODE_ENV === 'production') {
-  app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, '../frontend/build/index.html'));
-  });
-}
+// Note: Frontend is deployed separately on Firebase
+// This backend only serves API endpoints
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`SNP Electrical API server running on port ${PORT}`);
