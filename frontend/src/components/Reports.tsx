@@ -272,7 +272,11 @@ const Reports: React.FC = () => {
     doc.text(`Serviced By: ${job.technician_name || 'N/A'}`, 180, currentY);
     currentY += 20;
     
-    // Professional Parts/Labour Table
+    // End first page here - move parts to second page
+    doc.addPage();
+    currentY = 20;
+    
+    // Professional Parts/Labour Table - NOW ON PAGE 2
     if (job.partsJson) {
       try {
         const parts = JSON.parse(job.partsJson);
