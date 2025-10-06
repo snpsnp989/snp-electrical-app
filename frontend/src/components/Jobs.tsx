@@ -106,7 +106,7 @@ const Jobs: React.FC = () => {
     orderNumber: '',
     equipment: '',
     faultReported: '',
-    // Inspector/Technician completion fields
+    // Technician completion fields - only used when editing completed jobs
     actionTaken: '',
     serviceType: '',
     partsJson: '',
@@ -376,32 +376,40 @@ const Jobs: React.FC = () => {
       const selectedSite = sites.find((s:any)=>s.id===formData.siteId);
       const siteAddress = selectedSite ? [selectedSite.address, selectedSite.suburb, selectedSite.state, selectedSite.postcode].filter(Boolean).join(', ') : '';
       const payload: any = {
-        ...formData,
+        // Admin job creation fields
+        customer_id: formData.customer_id,
+        technician_id: formData.technician_id,
+        title: formData.equipment || 'Job',
+        description: formData.faultReported || '',
+        requestedDate: formData.requestedDate,
+        dueDate: formData.dueDate,
+        clientId: formData.clientId,
+        endCustomerId: formData.endCustomerId,
+        siteId: formData.siteId,
+        siteContact: formData.siteContact,
+        sitePhone: formData.sitePhone,
+        orderNumber: formData.orderNumber,
+        equipment: formData.equipment,
+        faultReported: formData.faultReported,
         // Persist selected relationships to Firestore
         client_id: formData.clientId || '',
         end_customer_id: formData.endCustomerId || '',
         site_id: formData.siteId || '',
-        // Ensure equipment type is explicitly saved
-        equipment: formData.equipment || '',
-        title: formData.equipment || 'Job',
-        description: formData.faultReported || '',
         siteAddress,
         clientName: (clients.find((c:any)=>c.id===formData.clientId)?.name) || '',
         endCustomerName: (endCustomers.find((c:any)=>c.id===formData.endCustomerId)?.name) || '',
-        // Include inspector/technician completion fields
-        actionTaken: appendStandardActionTaken(formData.actionTaken),
-        serviceType: formData.serviceType,
-        partsJson: JSON.stringify(parts),
-        arrivalTime: formData.arrivalTime,
-        departureTime: formData.departureTime,
-        technician_name: formData.technician_name,
-        // Clear old field names to prevent confusion
-        action_taken: null,
-        service_type: null,
-        parts_json: null,
-        arrival_time: null,
-        departure_time: null
+        status: 'pending' // Set initial status
       };
+
+      // Only include technician completion fields when editing completed jobs
+      if (editingJob && editingJob.status === 'completed') {
+        payload.actionTaken = formData.actionTaken;
+        payload.serviceType = formData.serviceType;
+        payload.partsJson = formData.partsJson;
+        payload.arrivalTime = formData.arrivalTime;
+        payload.departureTime = formData.departureTime;
+        payload.technician_name = formData.technician_name;
+      }
     
       if (editingJob) {
         await updateJobInFirebase(String(editingJob.id), payload);
@@ -433,7 +441,7 @@ const Jobs: React.FC = () => {
         orderNumber: '',
         equipment: '',
         faultReported: '',
-        // Inspector/Technician completion fields
+        // Technician completion fields - only used when editing completed jobs
         actionTaken: '',
         serviceType: '',
         partsJson: '',
@@ -483,7 +491,7 @@ const Jobs: React.FC = () => {
       orderNumber: anyJob.order_number || anyJob.orderNumber || '',
       equipment: anyJob.equipment || '',
       faultReported: anyJob.fault_reported || anyJob.faultReported || '',
-      // Inspector/Technician completion fields
+      // Technician completion fields - only used when editing completed jobs
       actionTaken: anyJob.actionTaken || anyJob.action_taken || '',
       serviceType: anyJob.serviceType || anyJob.service_type || '',
       partsJson: anyJob.parts_json || '',
@@ -1966,7 +1974,7 @@ const Jobs: React.FC = () => {
                       orderNumber: '',
                       equipment: '',
                       faultReported: '',
-                      // Inspector/Technician completion fields
+                      // Technician completion fields - only used when editing completed jobs
                       actionTaken: '',
                       serviceType: '',
                       partsJson: '',
