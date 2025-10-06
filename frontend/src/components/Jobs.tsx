@@ -1704,12 +1704,9 @@ const Jobs: React.FC = () => {
                     <label className="block text-gray-700 text-sm font-medium mb-2">Equipment</label>
                     <select value={formData.equipment} onChange={(e)=>setFormData({...formData, equipment: e.target.value})} className="w-full bg-white text-gray-900 border-2 border-gray-400 px-3 py-2 rounded-md focus:border-blue-500">
                       <option value="">Select Equipment</option>
-                      <option value="Bollards">Bollards</option>
-                      <option value="Roller Doors">Roller Doors</option>
-                      <option value="Boom Gates">Boom Gates</option>
-                      <option value="Road Blockers">Road Blockers</option>
-                      <option value="Slide Gates">Slide Gates</option>
-                      <option value="Swing Gates">Swing Gates</option>
+                      {equipment.filter(eq => eq.is_active !== false).map((eq) => (
+                        <option key={eq.id} value={eq.name}>{eq.name}</option>
+                      ))}
                     </select>
                   </div>
                 </div>
