@@ -287,6 +287,8 @@ const TechnicianMobile: React.FC = () => {
 
     // Load parts data
     fetchParts();
+
+    // Removed automatic data clearing to prevent logout on refresh
   }, []);
 
   useEffect(() => {
@@ -754,6 +756,8 @@ const TechnicianMobile: React.FC = () => {
       setPendingSync([]);
       saveOfflineData();
       addNotification('All pending changes synced', 'success');
+      
+      // Removed auto-clear after sync to prevent logout issues
     } catch (error) {
       console.error('Error syncing data:', error);
       addNotification('Sync failed - will retry later', 'error');
@@ -768,17 +772,49 @@ const TechnicianMobile: React.FC = () => {
     localStorage.setItem('technicianName', techName);
   };
 
-  const handleLogout = () => {
-    setTechnicianId(null);
-    setTechnicianName('');
-    setIsAuthenticated(false);
-    localStorage.removeItem('technicianId');
-    localStorage.removeItem('technicianName');
+  const clearAllLocalData = (preserveAuth = false) => {
+    if (!preserveAuth) {
+      // Clear authentication data only when explicitly logging out
+      localStorage.removeItem('technicianId');
+      localStorage.removeItem('technicianName');
+      localStorage.removeItem('userRole');
+      localStorage.removeItem('userName');
+      localStorage.removeItem('userId');
+      
+      // Clear authentication state
+      setTechnicianId(null);
+      setTechnicianName('');
+      setIsAuthenticated(false);
+    }
+    
+    // Clear job and work data (but preserve auth if requested)
+    localStorage.removeItem('offline_jobs');
+    localStorage.removeItem('pending_sync');
+    localStorage.removeItem('offline_photo_categories');
+    
+    // Clear job-related state
     setJobs([]);
     setFilteredJobs([]);
+    setSelectedJob(null);
+    setNotes('');
+    setServiceType('');
+    setArrival('');
+    setDeparture('');
+    setParts([]);
+    setPhotoCategories([]);
+    setPendingSync([]);
+    setNotifications([]);
     
     // Clear console
     console.clear();
+    
+    addNotification('All local data cleared', 'info');
+  };
+
+  const handleLogout = () => {
+    clearAllLocalData();
+    // Redirect to login page after logout
+    window.location.href = '/';
   };
 
   const handleStatusChange = async (jobId: string, newStatus: string) => {
@@ -876,6 +912,8 @@ const TechnicianMobile: React.FC = () => {
       
       // Show success notification
       addNotification('Job completed successfully!', 'success');
+      
+      // Removed auto-clear after job completion to prevent logout issues
       
       console.log('Job completion process finished');
       
@@ -1421,27 +1459,58 @@ const TechnicianMobile: React.FC = () => {
             <div className="bg-gray-800 rounded-lg p-4">
               <h3 className="text-lg font-semibold text-white mb-3">Job Details</h3>
               <div className="space-y-2">
+                {/* Service Report Number */}
+                <p className="text-gray-300">
+                  <span className="text-gray-400">Service Report Number:</span> {(selectedJob as any).snpid || selectedJob.id}
+                </p>
+                
+                {/* Order Number */}
+                <p className="text-gray-300">
+                  <span className="text-gray-400">Order Number:</span> {(selectedJob as any).order_number || (selectedJob as any).orderNumber || '—'}
+                </p>
+                
+                {/* Service Type */}
+                <p className="text-gray-300">
+                  <span className="text-gray-400">Service Type:</span> {(selectedJob as any).service_type || (selectedJob as any).serviceType || '—'}
+                </p>
+                
+                {/* Job Description */}
+                {selectedJob.description && (
+                  <p className="text-gray-300">
+                    <span className="text-gray-400">Description:</span> {selectedJob.description}
+                  </p>
+                )}
+                
+                {/* Customer */}
                 <p className="text-gray-300">
                   <span className="text-gray-400">Customer:</span> {selectedJob.end_customer_name || selectedJob.customer_name}
                 </p>
+                
+                {/* Site Address */}
                 <p className="text-gray-300">
                   <span className="text-gray-400">Site:</span> {(selectedJob as any).site_address || (selectedJob as any).siteAddress || selectedJob.customer_address}
                 </p>
-                {selectedJob.equipment && (
-                  <p className="text-gray-300">
-                    <span className="text-gray-400">Equipment:</span> {selectedJob.equipment}
-                  </p>
-                )}
-                {selectedJob.fault_reported && (
-                  <p className="text-gray-300">
-                    <span className="text-gray-400">Fault:</span> {selectedJob.fault_reported}
-                  </p>
-                )}
+                
+                {/* Equipment and Fault on same line */}
+                <p className="text-gray-300">
+                  <span className="text-gray-400">Equipment:</span> {selectedJob.equipment || '—'} • <span className="text-gray-400">Fault:</span> {selectedJob.fault_reported || (selectedJob as any).faultReported || '—'}
+                </p>
+                
+                {/* Phone */}
                 {selectedJob.site_phone && (
                   <p className="text-gray-300">
                     <span className="text-gray-400">Phone:</span> {selectedJob.site_phone}
                   </p>
                 )}
+                
+                {/* Requested and Due Dates */}
+                {selectedJob.status !== 'completed' && (
+                  <p className="text-gray-300">
+                    <span className="text-gray-400">Requested:</span> {(selectedJob as any).requested_date || (selectedJob as any).requestedDate || '—'} • <span className="text-gray-400">Due:</span> {(selectedJob as any).due_date || (selectedJob as any).dueDate || '—'}
+                  </p>
+                )}
+                
+                {/* Distance */}
                 {currentLocation && ((selectedJob as any).site_address || (selectedJob as any).siteAddress) && (
                   <p className="text-blue-400 text-sm">
                     📍 {getDistanceToJob(((selectedJob as any).site_address || (selectedJob as any).siteAddress) as string)}
