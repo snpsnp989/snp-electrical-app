@@ -130,6 +130,8 @@ const Jobs: React.FC = () => {
   const [partsSearch, setPartsSearch] = useState<string>('');
   const [filteredParts, setFilteredParts] = useState<Array<{ id: string; partNumber: string; description: string; unitType: 'qty' | 'hours' }>>([]);
   const [showPartsDropdown, setShowPartsDropdown] = useState<boolean>(false);
+  const [showSiteDropdown, setShowSiteDropdown] = useState<boolean>(false);
+  const [siteSearchTerm, setSiteSearchTerm] = useState<string>('');
 
   useEffect(() => {
     // Set up real-time jobs listener
@@ -398,7 +400,7 @@ const Jobs: React.FC = () => {
         siteAddress,
         clientName: (clients.find((c:any)=>c.id===formData.clientId)?.name) || '',
         endCustomerName: (endCustomers.find((c:any)=>c.id===formData.endCustomerId)?.name) || '',
-        status: 'pending' // Set initial status
+        status: editingJob ? editingJob.status : 'pending' // Preserve existing status when editing, set to pending for new jobs
       };
 
       // Only include technician completion fields when editing completed jobs
@@ -1474,10 +1476,7 @@ const Jobs: React.FC = () => {
                       {job.status === 'completed' && (
                         <div className="flex gap-2 mt-2">
                           <button
-                            onClick={() => {
-                              console.log('🔍 SIMPLE BUTTON CLICKED');
-                              alert('SIMPLE BUTTON CLICKED!');
-                            }}
+                            onClick={() => handleGenerateReport(job)}
                             className="bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded-md text-sm transition-colors"
                             title="Generate and download PDF report"
                           >
@@ -1611,41 +1610,80 @@ const Jobs: React.FC = () => {
                 </div>
                 <div>
                   <label className="block text-gray-700 text-sm font-medium mb-2">Site</label>
-                  <select value={formData.siteId} onChange={(e) => { 
-                    const id=e.target.value; 
-                    console.log('Site selection changed to:', id);
-                    console.log('Available sites:', sites);
-                    const s=sites.find((x:any)=>x.id===id); 
-                    const label=s?[s.address,s.suburb,s.state,s.postcode].filter(Boolean).join(', '):''; 
-                    
-                    // Auto-populate equipment from site
-                    let equipmentList = '';
-                    console.log('Selected site data:', s);
-                    console.log('Site equipment:', s?.equipment);
-                    console.log('Available equipment:', equipment);
-                    
-                    if (s && s.equipment && Array.isArray(s.equipment)) {
-                      const siteEquipment = s.equipment.map((eqId: string) => {
-                        const eq = equipment.find(e => e.id === eqId);
-                        return eq ? eq.name : eqId;
-                      }).filter(Boolean);
-                      equipmentList = siteEquipment.join(', ');
-                      console.log('Mapped equipment list:', equipmentList);
-                    }
-                    
-                    setFormData({ 
-                      ...formData, 
-                      siteId:id, 
-                      title: formData.equipment || 'Job', 
-                      description: formData.faultReported || '', 
-                      siteContact: formData.siteContact, 
-                      sitePhone: formData.sitePhone,
-                      equipment: equipmentList
-                    }); 
-                  }} className="w-full bg-white text-gray-900 border-2 border-gray-400 px-3 py-2 rounded-md focus:border-blue-500" required>
-                    <option value="">Select Site</option>
-                    {sites.length > 0 ? sites.map(s => (<option key={s.id} value={s.id}>{[s.address, s.suburb, s.state, s.postcode].filter(Boolean).join(', ')}</option>)) : <option disabled>Loading sites...</option>}
-                  </select>
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={formData.siteId ? (() => {
+                        const selectedSite = sites.find(s => s.id === formData.siteId);
+                        return selectedSite ? [selectedSite.address, selectedSite.suburb, selectedSite.state, selectedSite.postcode].filter(Boolean).join(', ') : '';
+                      })() : siteSearchTerm}
+                      onChange={(e) => {
+                        const searchTerm = e.target.value;
+                        setSiteSearchTerm(searchTerm);
+                        if (searchTerm === '') {
+                          setFormData({ ...formData, siteId: '' });
+                        }
+                      }}
+                      onFocus={() => setShowSiteDropdown(true)}
+                      onBlur={() => setTimeout(() => setShowSiteDropdown(false), 200)}
+                      placeholder="Search sites by address, number, suburb..."
+                      className="w-full bg-white text-gray-900 border-2 border-gray-400 px-3 py-2 rounded-md focus:border-blue-500"
+                      required
+                    />
+                    {showSiteDropdown && (
+                      <div className="absolute z-10 w-full bg-white border border-gray-300 rounded-md mt-1 max-h-48 overflow-y-auto shadow-lg">
+                        {sites.length > 0 ? (
+                          sites
+                            .filter(s => {
+                              const fullAddress = [s.address, s.suburb, s.state, s.postcode].filter(Boolean).join(', ').toLowerCase();
+                              return fullAddress.includes(siteSearchTerm.toLowerCase());
+                            })
+                            .map(s => (
+                              <div
+                                key={s.id}
+                                onClick={() => {
+                                  const selectedSite = s;
+                                  console.log('Site selection changed to:', s.id);
+                                  console.log('Available sites:', sites);
+                                  
+                                  // Auto-populate equipment from site
+                                  let equipmentList = '';
+                                  console.log('Selected site data:', selectedSite);
+                                  console.log('Site equipment:', selectedSite?.equipment);
+                                  console.log('Available equipment:', equipment);
+                                  
+                                  if (selectedSite && selectedSite.equipment && Array.isArray(selectedSite.equipment)) {
+                                    const siteEquipment = selectedSite.equipment.map((eqId: string) => {
+                                      const eq = equipment.find(e => e.id === eqId);
+                                      return eq ? eq.name : eqId;
+                                    }).filter(Boolean);
+                                    equipmentList = siteEquipment.join(', ');
+                                    console.log('Mapped equipment list:', equipmentList);
+                                  }
+                                  
+                                  setFormData({ 
+                                    ...formData, 
+                                    siteId: s.id, 
+                                    title: formData.equipment || 'Job', 
+                                    description: formData.faultReported || '', 
+                                    siteContact: formData.siteContact, 
+                                    sitePhone: formData.sitePhone,
+                                    equipment: equipmentList
+                                  });
+                                  setSiteSearchTerm('');
+                                  setShowSiteDropdown(false);
+                                }}
+                                className="px-3 py-2 hover:bg-gray-100 cursor-pointer border-b border-gray-200 last:border-b-0"
+                              >
+                                <div className="text-gray-900">{[s.address, s.suburb, s.state, s.postcode].filter(Boolean).join(', ')}</div>
+                              </div>
+                            ))
+                        ) : (
+                          <div className="px-3 py-2 text-gray-500">Loading sites...</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
@@ -1875,7 +1913,7 @@ const Jobs: React.FC = () => {
                       <button 
                         type="button"
                         onClick={()=>setParts([...parts,{description:'',qty:1}])} 
-                        className="bg-darker-blue hover:bg-blue-700 text-white px-3 py-2 rounded-md"
+                        className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-md font-medium"
                       >
                         Add Custom Line
                       </button>
@@ -1949,7 +1987,7 @@ const Jobs: React.FC = () => {
                     console.log('🔍 Button click - parts length:', parts.length);
                     // Let the form submission handle the rest
                   }}
-                  className="flex-1 bg-darker-blue hover:bg-blue-700 text-white px-4 py-2 rounded-md transition-colors"
+                  className="flex-1 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md transition-colors font-medium"
                 >
                   {editingJob ? 'Update' : 'Create'} Job
                 </button>
