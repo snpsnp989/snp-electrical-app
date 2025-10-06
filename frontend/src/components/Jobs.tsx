@@ -3,7 +3,7 @@ import { flushSync } from 'react-dom';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 import { db } from '../firebase';
-import { collection, getDocs, query, onSnapshot } from 'firebase/firestore';
+import { collection, getDocs, query, onSnapshot, doc, getDoc } from 'firebase/firestore';
 import { getApiUrl } from '../config/api';
 import { apiClient } from '../utils/apiClient';
 import { getJobs as getJobsFromFirebase, createJob as createJobInFirebase, updateJob as updateJobInFirebase, deleteJob as deleteJobInFirebase } from '../services/firebaseService';
@@ -405,11 +405,11 @@ const Jobs: React.FC = () => {
 
       // Only include technician completion fields when editing completed jobs
       if (editingJob && editingJob.status === 'completed') {
-        payload.actionTaken = formData.actionTaken;
-        payload.serviceType = formData.serviceType;
-        payload.partsJson = formData.partsJson;
-        payload.arrivalTime = formData.arrivalTime;
-        payload.departureTime = formData.departureTime;
+        payload.action_taken = formData.actionTaken;
+        payload.service_type = formData.serviceType;
+        payload.parts_json = JSON.stringify(parts);
+        payload.arrival_time = formData.arrivalTime;
+        payload.departure_time = formData.departureTime;
         payload.technician_name = formData.technician_name;
       }
     
@@ -1168,15 +1168,28 @@ const Jobs: React.FC = () => {
     console.log('🔍 Job status:', job.status);
     console.log('🔍 Job title:', job.title);
     try {
+      // Fetch the latest job data from Firestore to ensure we have the most up-to-date information
+      const jobRef: any = doc(db, 'jobs', job.id);
+      const jobSnap = await getDoc(jobRef);
+      
+      if (!jobSnap.exists()) {
+        alert('Job not found');
+        return;
+      }
+      
+      const latestJobData = { id: jobSnap.id, ...(jobSnap.data() as any) };
+      console.log('🔍 Latest job data from Firestore:', latestJobData);
+      console.log('🔍 Latest parts_json:', latestJobData.parts_json);
+      
       // Generate service report number
       const reportNumber = `SR-${Date.now()}`;
-      console.log('🔍 About to call generatePDF with job:', job);
+      console.log('🔍 About to call generatePDF with latest job data:', latestJobData);
       console.log('🔍 Report number:', reportNumber);
       
-      const doc = await generatePDF(job);
+      const pdfDoc = await generatePDF(latestJobData);
       console.log('🔍 PDF generated successfully');
       const fileName = `service-report-${reportNumber}.pdf`;
-      doc.save(fileName);
+      pdfDoc.save(fileName);
       console.log('🔍 PDF saved as:', fileName);
     } catch (error) {
       console.error('Error generating PDF:', error);
@@ -1186,8 +1199,20 @@ const Jobs: React.FC = () => {
 
   const handleViewReport = async (job: any) => {
     try {
-      const doc = await generatePDF(job);
-      const pdfBlob = doc.output('blob');
+      // Fetch the latest job data from Firestore to ensure we have the most up-to-date information
+      const jobRef: any = doc(db, 'jobs', job.id);
+      const jobSnap = await getDoc(jobRef);
+      
+      if (!jobSnap.exists()) {
+        alert('Job not found');
+        return;
+      }
+      
+      const latestJobData = { id: jobSnap.id, ...(jobSnap.data() as any) };
+      console.log('🔍 View Report - Latest job data from Firestore:', latestJobData);
+      
+      const pdfDoc = await generatePDF(latestJobData);
+      const pdfBlob = pdfDoc.output('blob');
       const pdfUrl = URL.createObjectURL(pdfBlob);
       window.open(pdfUrl, '_blank');
     } catch (error) {
