@@ -58,6 +58,7 @@ const TechnicianMobile: React.FC = () => {
   const [serviceType, setServiceType] = useState<string>('');
   const [arrival, setArrival] = useState<string>('');
   const [departure, setDeparture] = useState<string>('');
+  const [phone, setPhone] = useState<string>('');
   const [parts, setParts] = useState<Array<{ description: string; qty: number }>>([]);
   const [availableParts, setAvailableParts] = useState<Array<{ id: string; partNumber: string; description: string; unitType: 'qty' | 'hours' }>>([]);
   const [partsSearch, setPartsSearch] = useState<string>('');
@@ -563,6 +564,8 @@ const TechnicianMobile: React.FC = () => {
 
 
   const handlePhotoUpload = async (jobId: string, file: File, caption: string, category: string) => {
+    console.log('📸 Starting photo upload:', { jobId, fileName: file.name, caption, category });
+    
     // Create local URL for immediate display
     const localUrl = URL.createObjectURL(file);
     const tempPhoto = { 
@@ -594,12 +597,16 @@ const TechnicianMobile: React.FC = () => {
     // Upload to Firebase in background without blocking UI
     (async () => {
       try {
+        console.log('📸 Uploading to Firebase Storage...');
         // Upload to Firebase in background
         const storageRef = ref(storage, `job-photos/${jobId}/${category}/${Date.now()}-${file.name}`);
         const snapshot = await uploadBytes(storageRef, file);
         const photoUrl = await getDownloadURL(snapshot.ref);
         
+        console.log('📸 Photo uploaded to Storage, URL:', photoUrl);
+        console.log('📸 Adding photo to job document...');
         await addJobPhoto(jobId, photoUrl, caption, category);
+        console.log('📸 Photo added to job document successfully');
         
         // Update local state with Firebase URL
         setJobs(prev => prev.map(job => 
@@ -871,6 +878,7 @@ const TechnicianMobile: React.FC = () => {
       if (serviceType) payload.service_type = serviceType;
       if (arrival) payload.arrival_time = arrival;
       if (departure) payload.departure_time = departure;
+      if (phone) payload.site_phone = phone;
       if (parts.length) payload.parts_json = JSON.stringify(parts);
 
       console.log('Completing job with payload:', payload);
@@ -901,6 +909,7 @@ const TechnicianMobile: React.FC = () => {
       setServiceType('');
       setArrival('');
       setDeparture('');
+      setPhone('');
       setParts([]);
       setHasUnsavedChanges(false);
       
@@ -1555,6 +1564,21 @@ const TechnicianMobile: React.FC = () => {
                 <option value="Vandalism">Vandalism</option>
                 <option value="Repairs/Maintenance">Repairs/Maintenance</option>
               </select>
+            </div>
+
+            {/* Phone Number Section */}
+            <div className="bg-gray-800 rounded-lg p-4">
+              <h3 className="text-lg font-semibold text-white mb-3">Phone Number</h3>
+              <input
+                type="tel"
+                value={phone}
+                onChange={(e) => {
+                  setPhone(e.target.value);
+                  setHasUnsavedChanges(true);
+                }}
+                className="w-full bg-gray-700 text-white px-3 py-2 rounded-md"
+                placeholder="Enter phone number..."
+              />
             </div>
 
             {/* Action Taken Section */}
