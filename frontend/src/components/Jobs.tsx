@@ -473,9 +473,6 @@ const Jobs: React.FC = () => {
   };
 
   const handleEdit = async (job: Job) => {
-    alert('Edit button clicked!');
-    alert('Job ID: ' + job.id);
-    alert('Job title: ' + job.title);
     console.log('🔍 EDIT BUTTON CLICKED!');
     console.log('🔍 Opening amend modal for job:', job.id);
     console.log('🔍 Job data structure:', job);
@@ -862,7 +859,7 @@ const Jobs: React.FC = () => {
     doc.setTextColor(45, 55, 70); // Dark blue-gray labels
     doc.text('Order Number:', 20, currentY);
     doc.setFont('helvetica', 'normal');
-    doc.setTextColor(255, 0, 0); // Red color for order number data
+    doc.setTextColor(0, 0, 0); // Black color for order number data
     doc.text(job.orderNumber || job.order_number || 'N/A', 20 + 50, currentY);
     currentY += 8;
     
@@ -901,12 +898,7 @@ const Jobs: React.FC = () => {
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(30, 30, 30);
     doc.text(job.siteContact || job.clientContactName || 'N/A', 20 + 50, currentY);
-    
-    doc.setFont('helvetica', 'bold');
-    doc.setTextColor(45, 55, 70);
     doc.text('Phone Number:', pageWidth / 2 + 10, currentY);
-    doc.setFont('helvetica', 'normal');
-    doc.setTextColor(30, 30, 30);
     doc.text(job.sitePhone || job.clientPhone || 'N/A', pageWidth / 2 + 10 + 50, currentY);
     currentY += 8;
     
@@ -924,7 +916,7 @@ const Jobs: React.FC = () => {
     doc.setTextColor(45, 55, 70);
     doc.text('Service Type:', 20, currentY);
     doc.setFont('helvetica', 'normal');
-    doc.setTextColor(255, 0, 0); // Red color for service type data
+    doc.setTextColor(0, 0, 0); // Black color for service type data
     doc.text(job.serviceType || job.service_type || 'N/A', 20 + 50, currentY);
     currentY += 8;
     
@@ -1035,7 +1027,12 @@ const Jobs: React.FC = () => {
     doc.text(technicianName, 20 + 50, currentY);
     currentY += 15;
     
-    // Parts/Service table with blue styling
+    // End first page here - move parts to second page
+    // Add page break to move parts to second page
+    doc.addPage();
+    currentY = 20;
+    
+    // Parts/Service table with blue styling - NOW ON PAGE 2
     // Table header background - dark blue
     doc.setFillColor(45, 55, 70); // Dark blue-gray header background
     doc.rect(15, currentY - 5, pageWidth - 30, 12, 'F');
@@ -1090,18 +1087,18 @@ const Jobs: React.FC = () => {
       console.log('🔍 PDF Generation - First part description:', parts[0].description);
     }
     
-        // Render parts with page break handling and professional styling
+        // Render parts with professional styling (already on page 2)
         if (parts && parts.length > 0) {
           parts.forEach((part: any, index: number) => {
-            // Check if we need a new page
+            // Check if we need a new page (only if parts are very long)
             if (currentY > 250) { // Leave space for footer
               doc.addPage();
               currentY = 20;
               
               // Re-add header on new page with styling
-              doc.setFillColor(50, 50, 50);
+              doc.setFillColor(45, 55, 70);
               doc.rect(15, currentY - 5, pageWidth - 30, 12, 'F');
-              doc.setDrawColor(30, 30, 30);
+              doc.setDrawColor(30, 40, 55);
               doc.setLineWidth(0.5);
               doc.rect(15, currentY - 5, pageWidth - 30, 12);
               
@@ -1765,7 +1762,19 @@ const Jobs: React.FC = () => {
                 </div>
                 <div>
                   <label className="block text-slate-300 text-sm font-medium mb-2">Fault Reported</label>
-                  <input value={formData.faultReported} onChange={(e)=>setFormData({...formData, faultReported: e.target.value})} className="w-full bg-slate-700 text-white border-2 border-slate-600 px-3 py-2 rounded-md focus:border-blue-500" />
+                  <textarea 
+                    value={formData.faultReported} 
+                    onChange={(e)=>setFormData({...formData, faultReported: e.target.value})} 
+                    onInput={(e) => {
+                      const el = e.currentTarget as HTMLTextAreaElement;
+                      el.style.height = 'auto';
+                      el.style.height = `${el.scrollHeight}px`;
+                    }}
+                    className="w-full bg-slate-700 text-white border-2 border-slate-600 px-3 py-2 rounded-md focus:border-blue-500 resize-none" 
+                    rows={3}
+                    style={{ overflow: 'hidden' }}
+                    placeholder="Describe the fault reported..."
+                  />
                 </div>
               </div>
 
