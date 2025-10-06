@@ -119,10 +119,12 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-900 text-white">
+    <div className="min-h-screen bg-snp-dark text-white font-sans">
       <Navigation activeTab={activeTab} setActiveTab={setActiveTab} onLogout={handleLogout} userName={userName} userRole={userRole} />
-      <main className="container mx-auto px-4 py-8">
-        {renderContent()}
+      <main className="container mx-auto px-6 py-8 max-w-7xl">
+        <div className="bg-snp-gray rounded-lg shadow-snp-lg p-6 min-h-[calc(100vh-8rem)]">
+          {renderContent()}
+        </div>
       </main>
     </div>
   );
