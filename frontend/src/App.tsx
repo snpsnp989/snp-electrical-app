@@ -102,7 +102,7 @@ function App() {
       case 'dashboard':
         return <Dashboard />;
       case 'jobs':
-        return <JobsNew />;
+        return <Jobs />;
       case 'customers':
         return <Clients />;
       case 'equipment':
