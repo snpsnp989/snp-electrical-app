@@ -78,8 +78,9 @@ const Reports: React.FC = () => {
   const generateServiceReport = async (job: Job) => {
     setLoading(true);
     try {
-      // Generate report number
-      const reportNumber = `SR-${Date.now()}`;
+      // Use the unique service report number (snpid) from the job data
+      const serviceReportNumber = job.snpid || job.id;
+      const reportNumber = `SRN-${serviceReportNumber}`;
       
       // Create report record in Firebase
       const reportData = {
@@ -97,7 +98,7 @@ const Reports: React.FC = () => {
       const pdf = generatePDF(job, reportNumber);
       
       // Save PDF to downloads
-      pdf.save(`service-report-${reportNumber}.pdf`);
+      pdf.save(`${reportNumber}.pdf`);
       
       // Refresh reports list
       fetchReports();
