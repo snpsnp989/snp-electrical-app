@@ -10,14 +10,36 @@ import {
   where, 
   orderBy, 
   onSnapshot,
-  Timestamp 
+  Timestamp,
+  runTransaction
 } from 'firebase/firestore';
 import { db } from '../firebase';
 
 // Job Management
+// Transaction-safe sequential Service Report Number generator
+async function getNextServiceReportNumber(): Promise<number> {
+  const counterRef = doc(db, 'meta', 'serviceReport');
+  const next = await runTransaction(db, async (tx) => {
+    const snap = await tx.get(counterRef);
+    if (!snap.exists()) {
+      // Initialize at 1 if absent; you can change this doc's `next` later to start from any number
+      tx.set(counterRef, { next: 2 });
+      return 1;
+    }
+    const current = (snap.data() as any).next ?? 1;
+    tx.update(counterRef, { next: current + 1 });
+    return current;
+  });
+  return next;
+}
+
 export const createJob = async (jobData: any) => {
+  // Allocate a sequential Service Report Number (snpid)
+  const snpid = await getNextServiceReportNumber();
   const docRef = await addDoc(collection(db, 'jobs'), {
     ...jobData,
+    snpid,
+    status: jobData.status || 'pending',
     created_at: Timestamp.now(),
     updated_at: Timestamp.now()
   });
@@ -26,10 +48,26 @@ export const createJob = async (jobData: any) => {
 
 export const updateJob = async (jobId: string, updates: any) => {
   const jobRef = doc(db, 'jobs', jobId);
+  
+  // Convert date strings to Firestore Timestamps if needed
+  const processedUpdates = { ...updates };
+  if (processedUpdates.completed_date && typeof processedUpdates.completed_date === 'string') {
+    processedUpdates.completed_date = Timestamp.fromDate(new Date(processedUpdates.completed_date));
+  } else if (processedUpdates.completed_date === null || processedUpdates.completed_date === '') {
+    processedUpdates.completed_date = null;
+  }
+  if (processedUpdates.scheduled_date && typeof processedUpdates.scheduled_date === 'string') {
+    processedUpdates.scheduled_date = Timestamp.fromDate(new Date(processedUpdates.scheduled_date));
+  }
+  
   await updateDoc(jobRef, {
-    ...updates,
+    ...processedUpdates,
     updated_at: Timestamp.now()
   });
+};
+
+export const deleteJob = async (jobId: string) => {
+  await deleteDoc(doc(db, 'jobs', jobId));
 };
 
 export const getJobs = async () => {
@@ -74,11 +112,16 @@ export const subscribeToJobs = (callback: (jobs: any[]) => void) => {
 export const subscribeToTechnicianJobs = (technicianId: string, callback: (jobs: any[]) => void) => {
   const q = query(
     collection(db, 'jobs'),
-    where('technician_id', '==', technicianId),
-    orderBy('created_at', 'desc')
+    where('technician_id', '==', technicianId)
   );
   return onSnapshot(q, (snapshot) => {
-    const jobs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    const jobs = snapshot.docs
+      .map(doc => ({ id: doc.id, ...doc.data() }))
+      .sort((a: any, b: any) => {
+        const aTime = a.created_at?.toMillis?.() || new Date(a.created_at || 0).getTime() || 0;
+        const bTime = b.created_at?.toMillis?.() || new Date(b.created_at || 0).getTime() || 0;
+        return bTime - aTime;
+      });
     callback(jobs);
   });
 };
@@ -127,6 +170,12 @@ export const updateTechnician = async (technicianId: string, updates: any) => {
 
 export const deleteTechnician = async (technicianId: string) => {
   await deleteDoc(doc(db, 'technicians', technicianId));
+};
+
+// Fetch a single technician by Firestore document ID
+export const getTechnicianById = async (technicianId: string): Promise<any | null> => {
+  const techDoc = await getDoc(doc(db, 'technicians', technicianId));
+  return techDoc.exists() ? { id: techDoc.id, ...techDoc.data() } : null;
 };
 
 // Clients / End-Customers / Sites
@@ -182,37 +231,11 @@ export const updateSite = async (clientId: string, customerId: string, siteId: s
   await updateDoc(siteRef, siteData);
 };
 
-// Service Reports
-export const createServiceReport = async (reportData: any) => {
-  const docRef = await addDoc(collection(db, 'service_reports'), {
-    ...reportData,
-    created_at: Timestamp.now(),
-    email_sent: false
-  });
-  return docRef.id;
+export const deleteSite = async (clientId: string, customerId: string, siteId: string) => {
+  const siteRef = doc(db, `clients/${clientId}/customers/${customerId}/sites`, siteId);
+  await deleteDoc(siteRef);
 };
 
-export const getServiceReports = async () => {
-  const reportsSnapshot = await getDocs(collection(db, 'service_reports'));
-  return reportsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-};
-
-export const getMonthlyReports = async () => {
-  const q = query(
-    collection(db, 'service_reports'),
-    where('email_sent', '==', false)
-  );
-  const reportsSnapshot = await getDocs(q);
-  return reportsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-};
-
-export const markReportAsSent = async (reportId: string) => {
-  const reportRef = doc(db, 'service_reports', reportId);
-  await updateDoc(reportRef, {
-    email_sent: true,
-    sent_date: Timestamp.now()
-  });
-};
 
 // Mobile-specific functions
 export const updateJobStatus = async (jobId: string, status: string, technicianNotes?: string) => {

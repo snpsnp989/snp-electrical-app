@@ -1,4 +1,25 @@
 import React, { useState, useEffect } from 'react';
+import { getApiUrl } from '../config/api';
+
+// Safe date formatter for Firestore Timestamp, ISO string, or Date
+const formatDate = (value: any): string => {
+  if (!value) return '—';
+  try {
+    if (value?.toDate && typeof value.toDate === 'function') {
+      return value.toDate().toLocaleDateString();
+    }
+    if (value?.seconds !== undefined && value?.nanoseconds !== undefined) {
+      const millis = value.seconds * 1000 + Math.floor(value.nanoseconds / 1e6);
+      return new Date(millis).toLocaleDateString();
+    }
+    if (value instanceof Date) {
+      return value.toLocaleDateString();
+    }
+    const d = new Date(value);
+    if (!isNaN(d.getTime())) return d.toLocaleDateString();
+  } catch {}
+  return String(value);
+};
 
 interface DashboardStats {
   totalJobs: number;
@@ -6,7 +27,6 @@ interface DashboardStats {
   completedJobs: number;
   totalCustomers: number;
   totalTechnicians: number;
-  pendingReports: number;
 }
 
 const Dashboard: React.FC = () => {
@@ -16,7 +36,6 @@ const Dashboard: React.FC = () => {
     completedJobs: 0,
     totalCustomers: 0,
     totalTechnicians: 0,
-    pendingReports: 0
   });
 
   const [recentJobs, setRecentJobs] = useState<any[]>([]);
@@ -28,21 +47,20 @@ const Dashboard: React.FC = () => {
 
   const fetchDashboardData = async () => {
     try {
+      const apiUrl = getApiUrl();
+      
       // Fetch jobs
-      const jobsResponse = await fetch('http://localhost:5000/api/jobs');
+      const jobsResponse = await fetch(`${apiUrl}/api/jobs`);
       const jobs = await jobsResponse.json();
       
       // Fetch customers
-      const customersResponse = await fetch('http://localhost:5000/api/customers');
+      const customersResponse = await fetch(`${apiUrl}/api/customers`);
       const customers = await customersResponse.json();
       
       // Fetch technicians
-      const techniciansResponse = await fetch('http://localhost:5000/api/technicians');
+      const techniciansResponse = await fetch(`${apiUrl}/api/technicians`);
       const technicians = await techniciansResponse.json();
       
-      // Fetch reports
-      const reportsResponse = await fetch('http://localhost:5000/api/reports/monthly');
-      const reports = await reportsResponse.json();
 
       setStats({
         totalJobs: jobs.length,
@@ -50,7 +68,6 @@ const Dashboard: React.FC = () => {
         completedJobs: jobs.filter((job: any) => job.status === 'completed').length,
         totalCustomers: customers.length,
         totalTechnicians: technicians.length,
-        pendingReports: reports.length
       });
 
       setRecentJobs(jobs.slice(0, 5));
@@ -65,7 +82,6 @@ const Dashboard: React.FC = () => {
     { title: 'Completed Jobs', value: stats.completedJobs, color: 'bg-green-600' },
     { title: 'Customers', value: stats.totalCustomers, color: 'bg-purple-600' },
     { title: 'Technicians', value: stats.totalTechnicians, color: 'bg-indigo-600' },
-    { title: 'Pending Reports', value: stats.pendingReports, color: 'bg-red-600' }
   ];
 
   return (
@@ -122,7 +138,7 @@ const Dashboard: React.FC = () => {
                       {job.status}
                     </span>
                     <span className="text-gray-400 text-sm">
-                      {new Date(job.created_at).toLocaleDateString()}
+                      {formatDate(job.created_at)}
                     </span>
                   </div>
                 </div>

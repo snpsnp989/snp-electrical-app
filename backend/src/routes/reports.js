@@ -1,212 +1,351 @@
 const express = require('express');
-const nodemailer = require('nodemailer');
-const { db } = require('../database');
 const router = express.Router();
+const { db } = require('../firebase');
+const { authenticateToken, requireAdmin } = require('../middleware/auth');
+// Using Firebase Admin SDK (server-side)
+const puppeteer = require('puppeteer');
+const path = require('path');
+const fs = require('fs');
 
-// Email configuration
-const transporter = nodemailer.createTransport({
-  service: 'gmail', // You can change this to your preferred email service
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS
-  }
-});
-
-// Get all service reports
-router.get('/', (req, res) => {
-  const query = `
-    SELECT 
-      sr.*,
-      j.title as job_title,
-      c.name as customer_name,
-      c.email as customer_email
-    FROM service_reports sr
-    JOIN jobs j ON sr.job_id = j.id
-    JOIN customers c ON j.customer_id = c.id
-    ORDER BY sr.created_at DESC
-  `;
-  
-  db.all(query, [], (err, rows) => {
-    if (err) {
-      res.status(500).json({ error: err.message });
-      return;
-    }
-    res.json(rows);
-  });
-});
-
-// Get reports ready for monthly email
-router.get('/monthly', (req, res) => {
-  const query = `
-    SELECT 
-      sr.*,
-      j.title as job_title,
-      j.completed_date,
-      c.name as customer_name,
-      c.email as customer_email
-    FROM service_reports sr
-    JOIN jobs j ON sr.job_id = j.id
-    JOIN customers c ON j.customer_id = c.id
-    WHERE sr.email_sent = 0 AND j.status = 'completed'
-    ORDER BY c.name, j.completed_date
-  `;
-  
-  db.all(query, [], (err, rows) => {
-    if (err) {
-      res.status(500).json({ error: err.message });
-      return;
-    }
-    res.json(rows);
-  });
-});
-
-// Create service report
-router.post('/', (req, res) => {
-  const { job_id, report_content } = req.body;
-  
-  const query = 'INSERT INTO service_reports (job_id, report_content) VALUES (?, ?)';
-  
-  db.run(query, [job_id, report_content], function(err) {
-    if (err) {
-      res.status(500).json({ error: err.message });
-      return;
-    }
-    res.json({ id: this.lastID, message: 'Service report created successfully' });
-  });
-});
-
-// Send monthly service reports
-router.post('/send-monthly', async (req, res) => {
+// Generate a new service report
+router.post('/generate', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    // Get all unsent reports grouped by customer
-    const query = `
-      SELECT 
-        c.name as customer_name,
-        c.email as customer_email,
-        GROUP_CONCAT(
-          j.title || ' - Completed: ' || j.completed_date || '\n' || sr.report_content, 
-          '\n\n---\n\n'
-        ) as reports_content
-      FROM service_reports sr
-      JOIN jobs j ON sr.job_id = j.id
-      JOIN customers c ON j.customer_id = c.id
-      WHERE sr.email_sent = 0 AND j.status = 'completed'
-      GROUP BY c.id, c.name, c.email
-    `;
+    const { job_id, job_data } = req.body;
     
-    db.all(query, [], async (err, rows) => {
-      if (err) {
-        res.status(500).json({ error: err.message });
-        return;
-      }
-      
-      if (rows.length === 0) {
-        res.json({ message: 'No reports to send' });
-        return;
-      }
-      
-      // Send emails to each customer
-      const emailPromises = rows.map(row => {
-        const mailOptions = {
-          from: process.env.EMAIL_USER,
-          to: row.customer_email,
-          subject: `SNP Electrical - Monthly Service Reports`,
-          html: `
-            <h2>SNP Electrical - Monthly Service Reports</h2>
-            <p>Dear ${row.customer_name},</p>
-            <p>Please find below the service reports for work completed this month:</p>
-            <div style="white-space: pre-line;">${row.reports_content}</div>
-            <p>Thank you for choosing SNP Electrical for your maintenance needs.</p>
-            <p>Best regards,<br>SNP Electrical Team</p>
-          `
-        };
-        
-        return transporter.sendMail(mailOptions);
-      });
-      
-      try {
-        await Promise.all(emailPromises);
-        
-        // Mark reports as sent
-        const updateQuery = 'UPDATE service_reports SET email_sent = 1, sent_date = CURRENT_DATE WHERE email_sent = 0';
-        db.run(updateQuery, [], (err) => {
-          if (err) {
-            console.error('Error updating email status:', err);
-          }
-        });
-        
-        res.json({ 
-          message: `Successfully sent ${rows.length} monthly service report emails`,
-          customers: rows.length
-        });
-      } catch (emailError) {
-        res.status(500).json({ error: 'Failed to send emails: ' + emailError.message });
-      }
+    if (!job_id || !job_data) {
+      return res.status(400).json({ error: 'Job ID and job data are required' });
+    }
+
+    // Generate report number
+    const reportNumber = `SR-${Date.now()}`;
+    
+    // Create report record in Firebase
+    const reportData = {
+      job_id: job_id,
+      report_number: reportNumber,
+      generated_date: new Date().toISOString(),
+      status: 'generated',
+      job_data: job_data,
+      created_at: new Date()
+    };
+
+    const reportRef = await db.collection('service_reports').add(reportData);
+    
+    // Generate PDF
+    const pdfUrl = await generatePDF(reportNumber, job_data);
+    
+    // Update report with PDF URL
+    await db.collection('service_reports').doc(reportRef.id).update({
+      pdf_url: pdfUrl,
+      updated_at: new Date()
     });
+
+    res.json({
+      success: true,
+      report_id: reportRef.id,
+      report_number: reportNumber,
+      pdf_url: pdfUrl
+    });
+
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('Error generating report:', error);
+    res.status(500).json({ error: 'Failed to generate report' });
   }
 });
 
-// Send individual service report
-router.post('/send/:id', async (req, res) => {
+// Get all reports
+router.get('/', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const query = `
-      SELECT 
-        sr.*,
-        j.title as job_title,
-        c.name as customer_name,
-        c.email as customer_email
-      FROM service_reports sr
-      JOIN jobs j ON sr.job_id = j.id
-      JOIN customers c ON j.customer_id = c.id
-      WHERE sr.id = ?
-    `;
+    const reportsSnapshot = await db.collection('service_reports').get();
+    const reports = reportsSnapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
     
-    db.get(query, [req.params.id], async (err, row) => {
-      if (err) {
-        res.status(500).json({ error: err.message });
-        return;
-      }
-      
-      if (!row) {
-        res.status(404).json({ error: 'Service report not found' });
-        return;
-      }
-      
-      const mailOptions = {
-        from: process.env.EMAIL_USER,
-        to: row.customer_email,
-        subject: `SNP Electrical - Service Report: ${row.job_title}`,
-        html: `
-          <h2>SNP Electrical - Service Report</h2>
-          <p>Dear ${row.customer_name},</p>
-          <h3>Job: ${row.job_title}</h3>
-          <div style="white-space: pre-line;">${row.report_content}</div>
-          <p>Thank you for choosing SNP Electrical.</p>
-          <p>Best regards,<br>SNP Electrical Team</p>
-        `
-      };
-      
-      try {
-        await transporter.sendMail(mailOptions);
-        
-        // Mark as sent
-        const updateQuery = 'UPDATE service_reports SET email_sent = 1, sent_date = CURRENT_DATE WHERE id = ?';
-        db.run(updateQuery, [req.params.id], (err) => {
-          if (err) {
-            console.error('Error updating email status:', err);
-          }
-        });
-        
-        res.json({ message: 'Service report sent successfully' });
-      } catch (emailError) {
-        res.status(500).json({ error: 'Failed to send email: ' + emailError.message });
-      }
-    });
+    res.json(reports);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('Error fetching reports:', error);
+    res.status(500).json({ error: 'Failed to fetch reports' });
   }
 });
+
+// Download report PDF
+router.get('/:reportId/download', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { reportId } = req.params;
+    const reportDoc = await db.collection('service_reports').doc(reportId).get();
+    
+    if (!reportDoc.exists) {
+      return res.status(404).json({ error: 'Report not found' });
+    }
+    
+    const reportData = reportDoc.data();
+    
+    if (!reportData.pdf_url) {
+      return res.status(404).json({ error: 'PDF not generated yet' });
+    }
+    
+    // For now, we'll generate the PDF on-demand
+    // In production, you might want to store the PDF file
+    const pdfBuffer = await generatePDFBuffer(reportData.report_number, reportData.job_data);
+    
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="service-report-${reportData.report_number}.pdf"`);
+    res.send(pdfBuffer);
+    
+  } catch (error) {
+    console.error('Error downloading report:', error);
+    res.status(500).json({ error: 'Failed to download report' });
+  }
+});
+
+// Generate PDF HTML template
+function generateReportHTML(jobData) {
+  const currentDate = new Date().toLocaleDateString();
+  
+  return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="UTF-8">
+      <title>Service Report</title>
+      <style>
+        body {
+          font-family: Arial, sans-serif;
+          margin: 0;
+          padding: 20px;
+          background-color: #f5f5f5;
+        }
+        .container {
+          max-width: 800px;
+          margin: 0 auto;
+          background: white;
+          padding: 30px;
+          border-radius: 8px;
+          box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .header {
+          text-align: center;
+          border-bottom: 2px solid #333;
+          padding-bottom: 20px;
+          margin-bottom: 30px;
+        }
+        .company-name {
+          font-size: 28px;
+          font-weight: bold;
+          color: #333;
+          margin-bottom: 10px;
+        }
+        .company-details {
+          font-size: 14px;
+          color: #666;
+        }
+        .report-title {
+          font-size: 24px;
+          font-weight: bold;
+          color: #333;
+          margin: 20px 0;
+        }
+        .job-details {
+          margin-bottom: 30px;
+        }
+        .detail-row {
+          display: flex;
+          margin-bottom: 10px;
+          border-bottom: 1px solid #eee;
+          padding: 8px 0;
+        }
+        .detail-label {
+          font-weight: bold;
+          width: 200px;
+          color: #333;
+        }
+        .detail-value {
+          flex: 1;
+          color: #666;
+        }
+        .section {
+          margin-bottom: 30px;
+        }
+        .section-title {
+          font-size: 18px;
+          font-weight: bold;
+          color: #333;
+          margin-bottom: 15px;
+          border-bottom: 1px solid #ddd;
+          padding-bottom: 5px;
+        }
+        .content {
+          color: #666;
+          line-height: 1.6;
+        }
+        .footer {
+          margin-top: 40px;
+          text-align: center;
+          color: #666;
+          font-size: 12px;
+          border-top: 1px solid #eee;
+          padding-top: 20px;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <div class="company-name">SNP Electrical</div>
+          <div class="company-details">
+            Professional Electrical Services<br>
+            Phone: (02) 1234 5678 | Email: info@snpelectrical.com.au<br>
+            ABN: 12 345 678 901 | REC: 16208
+          </div>
+        </div>
+        
+        <div class="report-title">Service Report</div>
+        
+        <div class="job-details">
+          <div class="detail-row">
+            <div class="detail-label">Service Report #:</div>
+            <div class="detail-value">${jobData.snpid || 'N/A'}</div>
+          </div>
+          <div class="detail-row">
+            <div class="detail-label">Date:</div>
+            <div class="detail-value">${currentDate}</div>
+          </div>
+          <div class="detail-row">
+            <div class="detail-label">Client:</div>
+            <div class="detail-value">${jobData.client_name || 'N/A'}</div>
+          </div>
+          <div class="detail-row">
+            <div class="detail-label">End Customer:</div>
+            <div class="detail-value">${jobData.end_customer_name || 'N/A'}</div>
+          </div>
+          <div class="detail-row">
+            <div class="detail-label">Site Address:</div>
+            <div class="detail-value">${jobData.site_address || 'N/A'}</div>
+          </div>
+          <div class="detail-row">
+            <div class="detail-label">Service Type:</div>
+            <div class="detail-value">${jobData.service_type || 'N/A'}</div>
+          </div>
+          <div class="detail-row">
+            <div class="detail-label">Technician:</div>
+            <div class="detail-value">${jobData.technician_name || 'N/A'}</div>
+          </div>
+          <div class="detail-row">
+            <div class="detail-label">Arrival Time:</div>
+            <div class="detail-value">${jobData.arrival_time || 'N/A'}</div>
+          </div>
+          <div class="detail-row">
+            <div class="detail-label">Departure Time:</div>
+            <div class="detail-value">${jobData.departure_time || 'N/A'}</div>
+          </div>
+        </div>
+        
+        <div class="section">
+          <div class="section-title">Fault Reported</div>
+          <div class="content">${jobData.fault_reported || 'No fault details provided'}</div>
+        </div>
+        
+        <div class="section">
+          <div class="section-title">Action Taken</div>
+          <div class="content">${jobData.action_taken || 'No action details provided'}</div>
+        </div>
+        
+        ${jobData.parts_json ? `
+        <div class="section">
+          <div class="section-title">Parts Used</div>
+          <div class="content">
+            ${JSON.parse(jobData.parts_json).map(part => 
+              `• ${part.description} (Qty: ${part.qty})`
+            ).join('<br>')}
+          </div>
+        </div>
+        ` : ''}
+        
+        <div class="footer">
+          <p>This service report was generated on ${currentDate}</p>
+          <p>SNP Electrical - Professional Electrical Services</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+}
+
+// Generate PDF file
+async function generatePDF(reportNumber, jobData) {
+  const html = generateReportHTML(jobData);
+  
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas',
+      '--no-first-run',
+      '--no-zygote',
+      '--single-process',
+      '--disable-gpu'
+    ]
+  });
+  
+  const page = await browser.newPage();
+  await page.setContent(html, { waitUntil: 'networkidle0' });
+  
+  const pdf = await page.pdf({
+    format: 'A4',
+    printBackground: true,
+    margin: {
+      top: '0.5in',
+      right: '0.5in',
+      bottom: '0.5in',
+      left: '0.5in'
+    }
+  });
+  
+  await browser.close();
+  
+  // For now, return a placeholder URL
+  // In production, you'd save the PDF to a file storage service
+  return `https://snp-electrical-backend.onrender.com/api/reports/pdf/${reportNumber}`;
+}
+
+// Generate PDF buffer for download
+async function generatePDFBuffer(reportNumber, jobData) {
+  const html = generateReportHTML(jobData);
+  
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas',
+      '--no-first-run',
+      '--no-zygote',
+      '--single-process',
+      '--disable-gpu'
+    ]
+  });
+  
+  const page = await browser.newPage();
+  await page.setContent(html, { waitUntil: 'networkidle0' });
+  
+  const pdf = await page.pdf({
+    format: 'A4',
+    printBackground: true,
+    margin: {
+      top: '0.5in',
+      right: '0.5in',
+      bottom: '0.5in',
+      left: '0.5in'
+    }
+  });
+  
+  await browser.close();
+  
+  return pdf;
+}
 
 module.exports = router;

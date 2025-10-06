@@ -171,7 +171,7 @@ const Parts: React.FC = () => {
             />
             <input 
               type="file" 
-              accept=".iif" 
+              accept=".iif,.txt,.tsv,text/plain,application/octet-stream,application/vnd.intuit.iif" 
               onChange={(e) => e.target.files && importIIF(e.target.files[0])} 
               className="text-gray-300 text-sm" 
               title="Import IIF (QuickBooks) file"

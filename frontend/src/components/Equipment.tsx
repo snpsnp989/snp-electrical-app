@@ -1,4 +1,27 @@
 import React, { useState, useEffect } from 'react';
+import { getApiUrl } from '../config/api';
+import { collection, getDocs, addDoc, updateDoc, doc, deleteDoc, Timestamp } from 'firebase/firestore';
+import { db } from '../firebase';
+
+// Safe date formatter for Firestore Timestamp, ISO string, or Date
+const formatDate = (value: any): string => {
+  if (!value) return '—';
+  try {
+    if (value?.toDate && typeof value.toDate === 'function') {
+      return value.toDate().toLocaleDateString();
+    }
+    if (value?.seconds !== undefined && value?.nanoseconds !== undefined) {
+      const millis = value.seconds * 1000 + Math.floor(value.nanoseconds / 1e6);
+      return new Date(millis).toLocaleDateString();
+    }
+    if (value instanceof Date) {
+      return value.toLocaleDateString();
+    }
+    const d = new Date(value);
+    if (!isNaN(d.getTime())) return d.toLocaleDateString();
+  } catch {}
+  return String(value);
+};
 
 interface Equipment {
   id: string;
@@ -23,12 +46,9 @@ const Equipment: React.FC = () => {
 
   const fetchEquipment = async () => {
     try {
-      const apiUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
-        ? 'http://localhost:5001' 
-        : 'http://192.168.0.223:5001';
-      const response = await fetch(`${apiUrl}/api/equipment`);
-      const data = await response.json();
-      setEquipment(data);
+      const snap = await getDocs(collection(db, 'equipment'));
+      const data = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) })) as any;
+      setEquipment(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error('Error fetching equipment:', error);
     }
@@ -37,35 +57,23 @@ const Equipment: React.FC = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const apiUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
-        ? 'http://localhost:5001' 
-        : 'http://192.168.0.223:5001';
-      
-      const url = editingEquipment
-        ? `${apiUrl}/api/equipment/${editingEquipment.id}`
-        : `${apiUrl}/api/equipment`;
-      
-      const method = editingEquipment ? 'PUT' : 'POST';
-      
-      const response = await fetch(url, {
-        method,
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
+      if (editingEquipment) {
+        await updateDoc(doc(db, 'equipment', editingEquipment.id), {
           ...formData,
-          is_active: editingEquipment ? editingEquipment.is_active : true
-        }),
-      });
-
-      if (response.ok) {
-        fetchEquipment();
-        setShowModal(false);
-        setEditingEquipment(null);
-        setFormData({ name: '', description: '' });
+          updated_at: Timestamp.now()
+        } as any);
       } else {
-        alert('Failed to save equipment');
+        await addDoc(collection(db, 'equipment'), {
+          ...formData,
+          is_active: true,
+          created_at: Timestamp.now()
+        } as any);
       }
+
+      fetchEquipment();
+      setShowModal(false);
+      setEditingEquipment(null);
+      setFormData({ name: '', description: '' });
     } catch (error) {
       console.error('Error saving equipment:', error);
       alert('Failed to save equipment');
@@ -83,10 +91,9 @@ const Equipment: React.FC = () => {
 
   const handleToggleStatus = async (equipmentId: string) => {
     try {
-      const apiUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
-        ? 'http://localhost:5001' 
-        : 'http://192.168.0.223:5001';
-      await fetch(`${apiUrl}/api/equipment/${equipmentId}/toggle`, { method: 'PATCH' });
+      const current = equipment.find(e => e.id === equipmentId);
+      if (!current) return;
+      await updateDoc(doc(db, 'equipment', equipmentId), { is_active: !current.is_active } as any);
       fetchEquipment();
     } catch (error) {
       console.error('Error toggling equipment status:', error);
@@ -97,10 +104,7 @@ const Equipment: React.FC = () => {
   const handleDelete = async (equipmentId: string) => {
     if (!window.confirm('Delete this equipment? This cannot be undone.')) return;
     try {
-      const apiUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
-        ? 'http://localhost:5001' 
-        : 'http://192.168.0.223:5001';
-      await fetch(`${apiUrl}/api/equipment/${equipmentId}`, { method: 'DELETE' });
+      await deleteDoc(doc(db, 'equipment', equipmentId));
       fetchEquipment();
     } catch (error) {
       console.error('Error deleting equipment:', error);
@@ -146,7 +150,7 @@ const Equipment: React.FC = () => {
                         <p className="text-gray-300 mt-1">{item.description}</p>
                       )}
                       <p className="text-gray-400 text-sm mt-2">
-                        Created: {new Date(item.created_at).toLocaleDateString()}
+                        Created: {formatDate(item.created_at)}
                       </p>
                     </div>
                     <div className="flex items-center space-x-2">

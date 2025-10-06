@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import Navigation from './components/Navigation';
 import Dashboard from './components/Dashboard';
 import Jobs from './components/Jobs';
+import JobsNew from './components/JobsNew';
 import Customers from './components/Customers';
 import Clients from './components/Clients';
 import Equipment from './components/Equipment';
@@ -10,7 +11,8 @@ import Technicians from './components/Technicians';
 import Reports from './components/Reports';
 import TechnicianMobile from './components/TechnicianMobile';
 import MobileTest from './components/MobileTest';
-import AdminLogin from './components/AdminLogin';
+import UnifiedLogin from './components/UnifiedLogin';
+import { apiClient } from './utils/apiClient';
 
 function App() {
   const [activeTab, setActiveTab] = useState('jobs');
@@ -18,18 +20,38 @@ function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [userRole, setUserRole] = useState('admin');
   const [userName, setUserName] = useState('');
+  const [userId, setUserId] = useState('');
 
   const handleLogout = () => {
+    // Clear only authentication-related localStorage data
     localStorage.removeItem('adminToken');
     localStorage.removeItem('adminEmail');
     localStorage.removeItem('userRole');
     localStorage.removeItem('userName');
+    localStorage.removeItem('userId');
+    localStorage.removeItem('technicianId');
+    localStorage.removeItem('technicianName');
+    
+    // Clear console
+    console.clear();
+    
+    // Reset all state
     setIsAuthenticated(false);
     setUserRole('admin');
     setUserName('');
+    setUserId('');
+    
+    // Force page reload to clear any cached data
+    window.location.reload();
   };
 
   useEffect(() => {
+    // Clear any old authentication data first
+    localStorage.removeItem('technicianId');
+    localStorage.removeItem('technicianName');
+    localStorage.removeItem('adminToken');
+    localStorage.removeItem('adminEmail');
+    
     // Check if user is on mobile device
     const checkMobile = () => {
       const isMobileWidth = window.innerWidth < 768;
@@ -40,31 +62,28 @@ function App() {
     checkMobile();
     window.addEventListener('resize', checkMobile);
     
-    // Check for user authentication
-    const adminToken = localStorage.getItem('adminToken');
-    const storedUserRole = localStorage.getItem('userRole');
-    const storedUserName = localStorage.getItem('userName');
+    // Check for existing authentication
+    const savedRole = localStorage.getItem('userRole');
+    const savedName = localStorage.getItem('userName');
+    const savedUserId = localStorage.getItem('userId');
     
-    if (adminToken) {
+    if (savedRole && savedName) {
       setIsAuthenticated(true);
-      if (storedUserRole) setUserRole(storedUserRole);
-      if (storedUserName) setUserName(storedUserName);
+      setUserRole(savedRole);
+      setUserName(savedName);
+      if (savedUserId) setUserId(savedUserId);
     }
-    
-    // In real app, get user role from authentication
-    const urlParams = new URLSearchParams(window.location.search);
-    const role = urlParams.get('role') || (urlParams.get('technician') === 'true' ? 'technician' : 'manager');
-    setUserRole(role);
     
     return () => window.removeEventListener('resize', checkMobile);
   }, []);
 
-  // Show login if not authenticated
+  // Show unified login if not authenticated
   if (!isAuthenticated) {
-    return <AdminLogin onLogin={(authenticated, role, name) => {
+    return <UnifiedLogin onLogin={(authenticated, role, name, userId) => {
       setIsAuthenticated(authenticated);
-      if (role) setUserRole(role);
-      if (name) setUserName(name);
+      setUserRole(role);
+      setUserName(name);
+      if (userId) setUserId(userId);
     }} />;
   }
 
@@ -83,7 +102,7 @@ function App() {
       case 'dashboard':
         return <Dashboard />;
       case 'jobs':
-        return <Jobs />;
+        return <JobsNew />;
       case 'customers':
         return <Clients />;
       case 'equipment':

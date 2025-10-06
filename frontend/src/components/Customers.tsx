@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
+import { getApiUrl } from '../config/api';
+import { collection, getDocs, addDoc, updateDoc, deleteDoc, doc, Timestamp } from 'firebase/firestore';
 import { db } from '../firebase';
-import { collection, addDoc, updateDoc, deleteDoc, doc, getDocs } from 'firebase/firestore';
 
 interface Customer {
   id: number;
@@ -32,11 +33,12 @@ const Customers: React.FC = () => {
 
   const fetchCustomers = async () => {
     try {
-      const snapshot = await getDocs(collection(db, 'customers'));
-      const data = snapshot.docs.map(d => ({ id: d.id as any, ...(d.data() as any) }));
-      setCustomers(data as any);
+      const snap = await getDocs(collection(db, 'customers'));
+      const data = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) })) as any;
+      setCustomers(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error('Error fetching customers:', error);
+      setCustomers([]);
     }
   };
 
@@ -44,9 +46,9 @@ const Customers: React.FC = () => {
     e.preventDefault();
     try {
       if (editingCustomer) {
-        await updateDoc(doc(db, 'customers', String(editingCustomer.id)), formData);
+        await updateDoc(doc(db, 'customers', String(editingCustomer.id)), { ...formData, updated_at: Timestamp.now() } as any);
       } else {
-        await addDoc(collection(db, 'customers'), formData);
+        await addDoc(collection(db, 'customers'), { ...formData, created_at: Timestamp.now() } as any);
       }
       await fetchCustomers();
       setShowModal(false);

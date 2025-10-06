@@ -5,11 +5,21 @@ import {
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { storage } from '../firebase';
 import { db } from '../firebase';
-import { collection, getDocs } from 'firebase/firestore';
-import TechnicianLogin from './TechnicianLogin';
+import { collection, getDocs, query as fsQuery, where, orderBy, onSnapshot, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import PhotoUploadForm from './PhotoUploadForm';
 import { getApiUrl } from '../config/api';
 import TechnicianPerformance from './TechnicianPerformance';
+
+// Standard sentence to always append to Action Taken
+const STANDARD_ACTION_SENTENCE = 'Tested all safety devices prior to returning equipment to service.';
+
+// Append the standard sentence to Action Taken exactly once
+const appendStandardActionTaken = (text: string): string => {
+  const base = (text || '').trim();
+  if (!base) return STANDARD_ACTION_SENTENCE;
+  if (base.endsWith(STANDARD_ACTION_SENTENCE)) return base;
+  return `${base}\n\n${STANDARD_ACTION_SENTENCE}`;
+};
 
 interface Job {
   id: string;
@@ -86,25 +96,9 @@ const TechnicianMobile: React.FC = () => {
     accuracy: number;
   } | null>(null);
   const [locationPermission, setLocationPermission] = useState<'granted' | 'denied' | 'prompt'>('prompt');
-  const [timesheet, setTimesheet] = useState<Array<{
-    id: string;
-    jobId: string;
-    jobTitle: string;
-    startTime: Date;
-    endTime?: Date;
-    breakTime: number; // minutes
-    totalHours: number;
-    status: 'active' | 'completed';
-    notes?: string;
-  }>>([]);
-  const [currentTimesheet, setCurrentTimesheet] = useState<{
-    jobId: string;
-    startTime: Date;
-    breakTime: number;
-  } | null>(null);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [pendingSync, setPendingSync] = useState<Array<{
-    type: 'job_update' | 'photo_upload' | 'timesheet';
+    type: 'job_update' | 'photo_upload';
     data: any;
     timestamp: Date;
   }>>([]);
@@ -113,6 +107,24 @@ const TechnicianMobile: React.FC = () => {
   const [currentView, setCurrentView] = useState<'list' | 'detail'>('list');
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
+
+  // Safe date formatter for Firestore Timestamp, ISO string, or Date
+  const formatDate = (value: any): string => {
+    if (!value) return '—';
+    try {
+      if (value?.toDate && typeof value.toDate === 'function') {
+        return value.toDate().toLocaleDateString();
+      }
+      if (value?.seconds !== undefined && value?.nanoseconds !== undefined) {
+        // Firestore Timestamp-like object
+        const millis = value.seconds * 1000 + Math.floor(value.nanoseconds / 1e6);
+        return new Date(millis).toLocaleDateString();
+      }
+      const d = new Date(value);
+      if (!isNaN(d.getTime())) return d.toLocaleDateString();
+    } catch {}
+    return String(value);
+  };
 
   // Use centralized API configuration
 
@@ -135,31 +147,74 @@ const TechnicianMobile: React.FC = () => {
   // Populate form fields when a job is selected
   useEffect(() => {
     if (selectedJob) {
-      // Populate action taken (notes) from completed job
-      if (selectedJob.status === 'completed' && (selectedJob as any).action_taken) {
+      console.log('🔍 Loading completion data for job:', selectedJob.id, 'Status:', selectedJob.status);
+      
+      // Populate action taken (notes) - check for any existing completion data regardless of status
+      if ((selectedJob as any).action_taken) {
+        console.log('🔍 Loading action_taken:', (selectedJob as any).action_taken);
         setNotes((selectedJob as any).action_taken);
+      } else if ((selectedJob as any).actionTaken) {
+        console.log('🔍 Loading actionTaken:', (selectedJob as any).actionTaken);
+        setNotes((selectedJob as any).actionTaken);
       } else {
         setNotes('');
       }
 
-      // Populate service type from completed job
-      if (selectedJob.status === 'completed' && (selectedJob as any).service_type) {
+      // Populate service type - check for any existing completion data regardless of status
+      if ((selectedJob as any).service_type) {
+        console.log('🔍 Loading service_type:', (selectedJob as any).service_type);
         setServiceType((selectedJob as any).service_type);
+      } else if ((selectedJob as any).serviceType) {
+        console.log('🔍 Loading serviceType:', (selectedJob as any).serviceType);
+        setServiceType((selectedJob as any).serviceType);
       } else {
         setServiceType('');
       }
 
-      // Populate parts from completed job
-      if (selectedJob.status === 'completed' && (selectedJob as any).parts_json) {
+      // Populate parts - check for any existing completion data regardless of status
+      let existingParts = [];
+      if ((selectedJob as any).parts_json) {
         try {
-          const existingParts = JSON.parse((selectedJob as any).parts_json);
-          setParts(existingParts);
+          existingParts = JSON.parse((selectedJob as any).parts_json);
+          console.log('🔍 Loading parts_json:', existingParts);
         } catch (error) {
           console.error('Error parsing parts_json:', error);
-          setParts([]);
+          existingParts = [];
         }
+      } else if ((selectedJob as any).partsJson) {
+        try {
+          existingParts = JSON.parse((selectedJob as any).partsJson);
+          console.log('🔍 Loading partsJson:', existingParts);
+        } catch (error) {
+          console.error('Error parsing partsJson:', error);
+          existingParts = [];
+        }
+      } else if ((selectedJob as any).parts && Array.isArray((selectedJob as any).parts)) {
+        existingParts = (selectedJob as any).parts;
+        console.log('🔍 Loading parts array:', existingParts);
+      }
+      
+      setParts(existingParts);
+      
+      // Populate arrival and departure times if they exist
+      if ((selectedJob as any).arrival_time) {
+        console.log('🔍 Loading arrival_time:', (selectedJob as any).arrival_time);
+        setArrival((selectedJob as any).arrival_time);
+      } else if ((selectedJob as any).arrivalTime) {
+        console.log('🔍 Loading arrivalTime:', (selectedJob as any).arrivalTime);
+        setArrival((selectedJob as any).arrivalTime);
       } else {
-        setParts([]);
+        setArrival('');
+      }
+      
+      if ((selectedJob as any).departure_time) {
+        console.log('🔍 Loading departure_time:', (selectedJob as any).departure_time);
+        setDeparture((selectedJob as any).departure_time);
+      } else if ((selectedJob as any).departureTime) {
+        console.log('🔍 Loading departureTime:', (selectedJob as any).departureTime);
+        setDeparture((selectedJob as any).departureTime);
+      } else {
+        setDeparture('');
       }
     }
   }, [selectedJob]);
@@ -181,7 +236,14 @@ const TechnicianMobile: React.FC = () => {
 
   // Add part to list
   const addPartToList = (part: { id: string; partNumber: string; description: string; unitType: 'qty' | 'hours' }) => {
-    setParts([...parts, { description: part.description, qty: 1 }]);
+    console.log('🔍 Adding part to technician list:', part.description);
+    console.log('🔍 Current parts before:', parts);
+    const newParts = [...parts, { 
+      description: part.description, 
+      qty: 1
+    }];
+    console.log('🔍 New parts after:', newParts);
+    setParts(newParts);
     setPartsSearch('');
     setShowPartsDropdown(false);
     setHasUnsavedChanges(true);
@@ -276,73 +338,109 @@ const TechnicianMobile: React.FC = () => {
   }, [showNotifications]);
 
   useEffect(() => {
-    if (technicianId) {
-      // Fetch jobs from SQLite backend
-      const fetchTechnicianJobs = async () => {
+    if (!technicianId) return;
+    
+    console.log('Setting up job subscription for technician:', technicianId);
+    
+    // Subscribe to Firestore jobs for this technician
+    const q = fsQuery(
+      collection(db, 'jobs'),
+      where('technician_id', '==', technicianId)
+    );
+
+    const unsubscribe = onSnapshot(q, 
+      (snapshot) => {
         try {
-          const apiUrl = getApiUrl();
-          console.log('Fetching jobs from:', apiUrl);
-          console.log('Technician ID:', technicianId);
-          
-          const response = await fetch(`${apiUrl}/api/jobs`);
-          const allJobs = await response.json();
-          
-          console.log('All jobs from API:', allJobs);
-          console.log('Current technician ID:', technicianId, 'Type:', typeof technicianId);
-          
-          // Debug: Log each job's technician_id and status
-          allJobs.forEach((job: any, index: number) => {
-            console.log(`Job ${index}: ID=${job.id}, technician_id=${job.technician_id} (${typeof job.technician_id}), status=${job.status}`);
+          console.log(`Received ${snapshot.docs.length} jobs from Firestore for technician ${technicianId}`);
+          const allJobs = snapshot.docs.map((d) => {
+            const data: any = d.data();
+            // Safely convert all Firestore Timestamps to strings
+            const safeConvert = (val: any) => {
+              if (!val) return null;
+              if (val?.toDate && typeof val.toDate === 'function') return val.toDate().toISOString();
+              if (val?.seconds !== undefined && val?.nanoseconds !== undefined) {
+                const millis = val.seconds * 1000 + Math.floor(val.nanoseconds / 1e6);
+                return new Date(millis).toISOString();
+              }
+              return val;
+            };
+            return {
+              id: d.id,
+              ...data,
+              created_at: safeConvert(data.created_at),
+              updated_at: safeConvert(data.updated_at),
+              completed_date: safeConvert(data.completed_date),
+              scheduled_date: safeConvert(data.scheduled_date),
+              requested_date: safeConvert(data.requested_date),
+              due_date: safeConvert(data.due_date),
+            } as Job & any;
           });
+
+        // Sort by created_at desc on client to avoid composite index requirement
+        allJobs.sort((a: any, b: any) => {
+          const aTime = a.created_at instanceof Date ? a.created_at.getTime() : new Date(a.created_at || 0).getTime();
+          const bTime = b.created_at instanceof Date ? b.created_at.getTime() : new Date(b.created_at || 0).getTime();
+          return bTime - aTime;
+        });
+
+        // Filter out deleted and non-relevant statuses
+        const technicianJobs = allJobs.filter((job: any) => {
+          const notDeleted = job.deleted !== true;
+          const statusMatch = job.status === 'pending' || job.status === 'in_progress' || job.status === 'completed';
+          const technicianMatch = job.technician_id === technicianId;
           
-          // Filter jobs for this technician and only show pending, in progress, and completed
-          const technicianJobs = allJobs.filter((job: any) => {
-            const technicianMatch = (job.technician_id === parseInt(technicianId) || 
-                                   job.technician_id === technicianId ||
-                                   job.technician_id === technicianId.toString());
-            const statusMatch = (job.status === 'pending' || 
-                               job.status === 'in progress' || 
-                               job.status === 'completed');
-            
-            console.log(`Job ${job.id}: technicianMatch=${technicianMatch}, statusMatch=${statusMatch}, willShow=${technicianMatch && statusMatch}`);
-            
-            return technicianMatch && statusMatch;
-          });
-          
-          console.log('Filtered jobs for technician:', technicianJobs);
-          
-          // Check for new jobs
-          const previousJobIds = jobs.map((job: Job) => job.id);
-          const newJobs = technicianJobs.filter((job: any) => !previousJobIds.includes(job.id));
-          if (newJobs.length > 0) {
-            addNotification(`New job assigned: ${newJobs[0].title}`, 'info');
+          // Debug logging for the specific job
+          if (job.id === 'IL15uiNOAz2RUGl13PZs') {
+            console.log('Debug job IL15uiNOAz2RUGl13PZs:', {
+              id: job.id,
+              technician_id: job.technician_id,
+              currentTechnicianId: technicianId,
+              technicianMatch,
+              notDeleted,
+              statusMatch,
+              status: job.status,
+              title: job.title
+            });
           }
           
-          // Check for status changes
-          jobs.forEach((oldJob: Job) => {
-            const newJob = technicianJobs.find((job: any) => job.id === oldJob.id);
-            if (newJob && newJob.status !== oldJob.status) {
-              addNotification(`Job "${newJob.title}" status changed to ${getStatusText(newJob.status)}`, 'success');
-            }
-          });
-          
-          setJobs(technicianJobs);
-          saveOfflineData();
-        } catch (error) {
-          console.error('Error fetching technician jobs:', error);
-          console.error('API URL attempted:', getApiUrl());
-          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-          addNotification(`Error loading jobs: ${errorMessage}`, 'error');
-        }
-      };
+          return notDeleted && statusMatch && technicianMatch;
+        });
 
-      fetchTechnicianJobs();
-      
-      // Set up polling for real-time updates
-      const interval = setInterval(fetchTechnicianJobs, 30000); // Poll every 30 seconds
-      
-      return () => clearInterval(interval);
-    }
+        // Notify if new jobs arrived
+        const previousJobIds = jobs.map((job: Job) => job.id);
+        const newJobs = technicianJobs.filter((job: any) => !previousJobIds.includes(job.id));
+        if (newJobs.length > 0) {
+          addNotification(`New job assigned: ${newJobs[0].title}`, 'info');
+        }
+
+        // Notify on status changes
+        jobs.forEach((oldJob: Job) => {
+          const newJob = technicianJobs.find((j: any) => j.id === oldJob.id);
+          if (newJob && newJob.status !== oldJob.status) {
+            addNotification(`Job "${newJob.title}" status changed to ${getStatusText(newJob.status)}`, 'success');
+          }
+        });
+
+        setJobs(technicianJobs as any);
+        saveOfflineData();
+      } catch (e) {
+        console.error('Error processing jobs snapshot:', e);
+      }
+    }, (err) => {
+      console.error('Error subscribing to jobs:', err);
+      if (err.code === 'permission-denied') {
+        console.error('Firestore permission denied - check security rules');
+        addNotification('Database access denied. Please check permissions.', 'error');
+      } else if (err.message && err.message.includes('CORS')) {
+        console.error('CORS error detected - check API key restrictions');
+        addNotification('Network error: Unable to connect to database', 'error');
+      } else {
+        addNotification(`Database error: ${err.message || 'Unknown error'}`, 'error');
+      }
+      addNotification('Failed to load jobs from Firestore', 'error');
+    });
+
+    return () => unsubscribe();
   }, [technicianId]);
 
   // Filter and sort jobs
@@ -461,53 +559,6 @@ const TechnicianMobile: React.FC = () => {
     return `${distance.toFixed(1)} km away`;
   };
 
-  const startTimesheet = (jobId: string, jobTitle: string) => {
-    const startTime = new Date();
-    setCurrentTimesheet({ jobId, startTime, breakTime: 0 });
-    
-    const newEntry = {
-      id: Date.now().toString(),
-      jobId,
-      jobTitle,
-      startTime,
-      breakTime: 0,
-      totalHours: 0,
-      status: 'active' as const
-    };
-    
-    setTimesheet(prev => [...prev, newEntry]);
-    addNotification(`Started timesheet for ${jobTitle}`, 'info');
-    saveOfflineData();
-  };
-
-  const endTimesheet = (jobId: string, notes?: string) => {
-    const endTime = new Date();
-    const entry = timesheet.find(t => t.jobId === jobId && t.status === 'active');
-    
-    if (entry) {
-      const totalMinutes = (endTime.getTime() - entry.startTime.getTime()) / (1000 * 60);
-      const workMinutes = totalMinutes - (currentTimesheet?.breakTime || 0);
-      const totalHours = workMinutes / 60;
-      
-      setTimesheet(prev => prev.map(t => 
-        t.id === entry.id 
-          ? { ...t, endTime, totalHours, status: 'completed' as const, notes }
-          : t
-      ));
-      
-      setCurrentTimesheet(null);
-      addNotification(`Timesheet completed: ${totalHours.toFixed(2)} hours`, 'success');
-      saveOfflineData();
-    }
-  };
-
-  const addBreakTime = (minutes: number) => {
-    if (currentTimesheet) {
-      setCurrentTimesheet(prev => prev ? { ...prev, breakTime: prev.breakTime + minutes } : null);
-      addNotification(`Added ${minutes} minutes break time`, 'info');
-      saveOfflineData();
-    }
-  };
 
   const handlePhotoUpload = async (jobId: string, file: File, caption: string, category: string) => {
     // Create local URL for immediate display
@@ -603,17 +654,10 @@ const TechnicianMobile: React.FC = () => {
     })();
   };
 
-  const getTotalHoursToday = () => {
-    const today = new Date().toDateString();
-    return timesheet
-      .filter(t => t.startTime.toDateString() === today)
-      .reduce((total, t) => total + t.totalHours, 0);
-  };
 
   const loadOfflineData = () => {
     try {
       const savedJobs = localStorage.getItem('offline_jobs');
-      const savedTimesheet = localStorage.getItem('offline_timesheet');
       const savedPendingSync = localStorage.getItem('pending_sync');
       const savedPhotoCategories = localStorage.getItem('offline_photo_categories');
 
@@ -625,16 +669,6 @@ const TechnicianMobile: React.FC = () => {
           scheduled_date: job.scheduled_date ? new Date(job.scheduled_date) : null
         }));
         setJobs(jobsWithDates);
-      }
-      if (savedTimesheet) {
-        const parsedTimesheet = JSON.parse(savedTimesheet);
-        // Convert date strings back to Date objects
-        const timesheetWithDates = parsedTimesheet.map((entry: any) => ({
-          ...entry,
-          startTime: new Date(entry.startTime),
-          endTime: entry.endTime ? new Date(entry.endTime) : undefined
-        }));
-        setTimesheet(timesheetWithDates);
       }
       if (savedPendingSync) {
         const parsedPendingSync = JSON.parse(savedPendingSync);
@@ -665,7 +699,6 @@ const TechnicianMobile: React.FC = () => {
   const saveOfflineData = () => {
     try {
       localStorage.setItem('offline_jobs', JSON.stringify(jobs));
-      localStorage.setItem('offline_timesheet', JSON.stringify(timesheet));
       localStorage.setItem('pending_sync', JSON.stringify(pendingSync));
       localStorage.setItem('offline_photo_categories', JSON.stringify(photoCategories));
     } catch (error) {
@@ -673,7 +706,7 @@ const TechnicianMobile: React.FC = () => {
     }
   };
 
-  const addToPendingSync = (type: 'job_update' | 'photo_upload' | 'timesheet', data: any) => {
+  const addToPendingSync = (type: 'job_update' | 'photo_upload', data: any) => {
     const syncItem = {
       type,
       data,
@@ -690,11 +723,18 @@ const TechnicianMobile: React.FC = () => {
       const syncPromises = pendingSync.map(async (item) => {
         switch (item.type) {
           case 'job_update':
-            return fetch(`${getApiUrl()}/api/jobs/${item.data.jobId}`, {
-              method: 'PUT',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(item.data.payload)
-            });
+            try {
+              const jobRef = doc(db, 'jobs', item.data.jobId);
+              const updates: any = { ...item.data.payload, updated_at: new Date() };
+              if (updates.status === 'completed') {
+                updates.completed_date = new Date();
+              }
+              await updateDoc(jobRef, updates);
+            } catch (e) {
+              console.error('Firestore job update sync failed:', e);
+              throw e;
+            }
+            return;
           case 'photo_upload':
             // Handle photo upload sync - upload to Firebase Storage
             const { jobId, photoData, category } = item.data;
@@ -706,10 +746,6 @@ const TechnicianMobile: React.FC = () => {
             
             // Update photo data with new URL
             await addJobPhoto(jobId, photoUrl, photoData.caption);
-            break;
-          case 'timesheet':
-            // Handle timesheet sync - could send to backend API
-            console.log('Syncing timesheet data:', item.data);
             break;
         }
       });
@@ -740,33 +776,26 @@ const TechnicianMobile: React.FC = () => {
     localStorage.removeItem('technicianName');
     setJobs([]);
     setFilteredJobs([]);
+    
+    // Clear console
+    console.clear();
   };
 
   const handleStatusChange = async (jobId: string, newStatus: string) => {
     try {
       const payload: any = { status: newStatus };
-      if (notes) payload.actionTaken = notes;
-      if (arrival) payload.arrivalTime = arrival;
-      if (departure) payload.departureTime = departure;
-      if (parts.length) payload.partsJson = JSON.stringify(parts);
+      if (notes) payload.action_taken = appendStandardActionTaken(notes);
+      if (arrival) payload.arrival_time = arrival;
+      if (departure) payload.departure_time = departure;
+      if (parts.length) payload.parts_json = JSON.stringify(parts);
       
-      // Include photos in the payload
-      const currentJob = jobs.find(job => job.id === jobId);
-      if (currentJob?.photos && currentJob.photos.length > 0) {
-        payload.photos = currentJob.photos;
-      }
-
       if (isOnline) {
-        const response = await fetch(`${getApiUrl()}/api/jobs/${jobId}`, { 
-          method: 'PUT', 
-          headers: { 'Content-Type': 'application/json' }, 
-          body: JSON.stringify(payload) 
-        });
-        
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
+        const jobRef = doc(db, 'jobs', jobId);
+        const updates: any = { ...payload, updated_at: new Date() };
+        if (newStatus === 'completed') {
+          updates.completed_date = new Date();
         }
-        
+        await updateDoc(jobRef, updates);
         addNotification('Job status updated successfully!', 'success');
       } else {
         addToPendingSync('job_update', { jobId, payload });
@@ -802,27 +831,19 @@ const TechnicianMobile: React.FC = () => {
         completed_date: new Date().toISOString().split('T')[0] // YYYY-MM-DD format
       };
       
-      if (notes) payload.actionTaken = notes;
-      if (serviceType) payload.serviceType = serviceType;
-      if (arrival) payload.arrivalTime = arrival;
-      if (departure) payload.departureTime = departure;
-      if (parts.length) payload.partsJson = JSON.stringify(parts);
+      if (notes) payload.action_taken = appendStandardActionTaken(notes);
+      if (serviceType) payload.service_type = serviceType;
+      if (arrival) payload.arrival_time = arrival;
+      if (departure) payload.departure_time = departure;
+      if (parts.length) payload.parts_json = JSON.stringify(parts);
 
       console.log('Completing job with payload:', payload);
 
       if (isOnline) {
-        // Update job status
-        const response = await fetch(`${getApiUrl()}/api/jobs/${jobId}`, { 
-          method: 'PUT', 
-          headers: { 'Content-Type': 'application/json' }, 
-          body: JSON.stringify(payload) 
-        });
-        
-        if (!response.ok) {
-          const errorText = await response.text();
-          throw new Error(`HTTP error! status: ${response.status} - ${errorText}`);
-        }
-        
+        // Update job status directly in Firestore
+        const jobRef = doc(db, 'jobs', jobId);
+        const updates: any = { ...payload, updated_at: new Date(), completed_date: new Date() };
+        await updateDoc(jobRef, updates);
         console.log('Job status updated successfully');
       } else {
         // Offline mode
@@ -833,14 +854,6 @@ const TechnicianMobile: React.FC = () => {
         console.log('Job marked for sync when online');
       }
       
-      // End timesheet
-      try {
-        await endTimesheet(jobId, notes);
-        console.log('Timesheet ended successfully');
-      } catch (timesheetError) {
-        console.error('Error ending timesheet:', timesheetError);
-        // Don't fail the whole operation for timesheet errors
-      }
       
       // Update selected job
       if (selectedJob?.id === jobId) {
@@ -857,6 +870,9 @@ const TechnicianMobile: React.FC = () => {
       
       // Save offline data
       saveOfflineData();
+      
+      // Close the job detail modal
+      setSelectedJob(null);
       
       // Show success notification
       addNotification('Job completed successfully!', 'success');
@@ -891,9 +907,22 @@ const TechnicianMobile: React.FC = () => {
     }
   };
 
-  // Show login screen if not authenticated
+  // Show message if not authenticated (use Technician Portal via App routing)
   if (!isAuthenticated) {
-    return <TechnicianLogin onLogin={handleLogin} />;
+    return (
+      <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center p-8">
+        <div className="max-w-md w-full bg-gray-800 rounded-lg p-6 text-center border border-gray-700">
+          <h2 className="text-xl font-semibold mb-2">Technician Portal</h2>
+          <p className="text-gray-300 mb-4">Please access via the technician portal.</p>
+          <a
+            href={window.location.pathname + '?role=technician'}
+            className="inline-block bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded"
+          >
+            Go to Portal
+          </a>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -945,7 +974,7 @@ const TechnicianMobile: React.FC = () => {
                             <div className="flex-1">
                               <p className="text-white text-sm">{notification.message}</p>
                               <p className="text-gray-400 text-xs">
-                                {notification.timestamp.toLocaleTimeString()}
+                                {formatDate(notification.timestamp)}
                               </p>
                             </div>
                           </div>
@@ -983,14 +1012,6 @@ const TechnicianMobile: React.FC = () => {
               <div>
                 <p className="text-sm text-gray-300">Welcome, {technicianName}</p>
                 <div className="flex items-center gap-4 text-xs">
-                  <span className="text-green-400">
-                    ⏱️ Today: {getTotalHoursToday().toFixed(1)}h
-                  </span>
-                  {currentTimesheet && (
-                    <span className="text-blue-400">
-                      🔄 Active: {Math.floor((Date.now() - currentTimesheet.startTime.getTime()) / (1000 * 60 * 60))}h
-                    </span>
-                  )}
                   <div className="flex items-center gap-2">
                     <span className={`${isOnline ? 'text-green-400' : 'text-red-400'}`}>
                       {isOnline ? '🟢 Online' : '🔴 Offline'}
@@ -1044,14 +1065,13 @@ const TechnicianMobile: React.FC = () => {
             <div>
               <h4 className="text-white font-medium mb-2">Data Status</h4>
               <p className="text-gray-300">Jobs: {jobs.length}</p>
-              <p className="text-gray-300">Timesheet Entries: {timesheet.length}</p>
               <p className="text-gray-300">Photo Categories: {photoCategories.length}</p>
             </div>
             <div>
               <h4 className="text-white font-medium mb-2">Actions</h4>
               <button
                 onClick={() => {
-                  console.log('Current state:', { jobs, timesheet, pendingSync, photoCategories });
+                  console.log('Current state:', { jobs, pendingSync, photoCategories });
                   addNotification('State logged to console', 'info');
                 }}
                 className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded text-xs mr-2"
@@ -1074,7 +1094,7 @@ const TechnicianMobile: React.FC = () => {
                 <div className="space-y-1">
                   {pendingSync.map((item, index) => (
                     <div key={index} className="text-xs text-gray-300">
-                      {item.type}: {item.timestamp.toLocaleTimeString()}
+                      {item.type}: {formatDate(item.timestamp)}
                     </div>
                   ))}
                 </div>
@@ -1114,7 +1134,6 @@ const TechnicianMobile: React.FC = () => {
       {activeTab === 'performance' && (
         <TechnicianPerformance 
           technicianId={technicianId || ''}
-          timesheet={timesheet}
           jobs={jobs}
         />
       )}
@@ -1184,41 +1203,55 @@ const TechnicianMobile: React.FC = () => {
             >
               <div className="flex justify-between items-start mb-3">
                 <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-1">
-                    <h3 className="text-lg font-semibold text-white">
-                      {job.order_number ? `Order #${job.order_number}` : job.title}
-                    </h3>
+                  {/* Header row */}
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="inline-flex items-center gap-1 text-white font-semibold text-lg">
+                      🧾 Service Report {String((job as any).snpid || job.id)}
+                    </span>
                     {job.scheduled_date && (
-                      <span className="text-xs text-gray-400 bg-gray-700 px-2 py-1 rounded">
-                        {new Date(job.scheduled_date).toLocaleDateString()}
+                      <span className="text-xs text-gray-300 bg-gray-700/70 px-2 py-1 rounded">
+                        📆 {formatDate(job.scheduled_date)}
                       </span>
-                  )}
-                </div>
-                  {job.order_number && job.title !== job.order_number && (
-                    <p className="text-gray-500 text-sm">Service: {job.title}</p>
-                  )}
-                  {job.snpid && (
-                    <p className="text-gray-500 text-sm">SNP ID: {job.snpid}</p>
-                  )}
-                  <p className="text-gray-400 text-sm font-medium">{job.end_customer_name || job.customer_name}</p>
-                  <p className="text-gray-400 text-sm">📍 {job.site_address || job.customer_address}</p>
-                  {currentLocation && job.site_address && (
-                    <p className="text-blue-400 text-xs">📍 {getDistanceToJob(job.site_address)}</p>
-                  )}
-                  {job.equipment && (
-                    <p className="text-gray-400 text-sm">🔧 Equipment: {job.equipment}</p>
-                  )}
-                  {job.fault_reported && (
-                    <p className="text-gray-400 text-sm">⚠️ Fault: {job.fault_reported}</p>
-                  )}
-                  {job.site_phone && (
-                    <p className="text-gray-400 text-sm">📞 {job.site_phone}</p>
+                    )}
+                    {job.order_number && (
+                      <span className="text-xs text-amber-300 bg-amber-900/30 border border-amber-700 px-2 py-1 rounded">
+                        🏷️ Order number {job.order_number}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Info grid */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1">
+                    <div className="text-green-400 text-sm flex items-center gap-2">
+                      <span>📍</span>
+                      <span>{(job as any).site_address || (job as any).siteAddress || job.customer_address || 'Site address not set'}</span>
+                    </div>
+                    <div className="text-gray-300 text-sm flex items-center gap-2">
+                      <span>🔧</span>
+                      <span>{job.equipment || '—'}</span>
+                    </div>
+                    <div className="text-red-400 text-sm flex items-center gap-2">
+                      <span>⚠️</span>
+                      <span>{job.fault_reported || (job as any).faultReported || '—'}</span>
+                    </div>
+                    <div className="text-gray-300 text-sm flex items-center gap-2">
+                      <span>🕒</span>
+                      <span>Requested {formatDate((job as any).requested_date || (job as any).requestedDate)}</span>
+                    </div>
+                    <div className="text-gray-300 text-sm flex items-center gap-2 sm:col-start-2">
+                      <span>⏰</span>
+                      <span>Due {formatDate((job as any).due_date || (job as any).dueDate)}</span>
+                    </div>
+                  </div>
+
+                  {currentLocation && ((job as any).site_address || (job as any).siteAddress) && (
+                    <p className="text-blue-400 text-xs mt-2">📏 {getDistanceToJob(((job as any).site_address || (job as any).siteAddress) as string)}</p>
                   )}
                 </div>
                 <div className="flex flex-col items-end gap-2">
-                <span className={`px-3 py-1 rounded-full text-xs font-medium text-white ${getStatusColor(job.status)}`}>
-                  {getStatusText(job.status)}
-                </span>
+                  <span className={`px-3 py-1 rounded-full text-xs font-medium text-white ${getStatusColor(job.status)}`}>
+                    {getStatusText(job.status)}
+                  </span>
                   {job.photos && job.photos.length > 0 && (
                     <span className="text-xs text-blue-400">📷 {job.photos.length} photos</span>
                   )}
@@ -1281,11 +1314,10 @@ const TechnicianMobile: React.FC = () => {
                   <button
                       onClick={() => {
                         handleStatusChange(job.id, 'in_progress');
-                        startTimesheet(job.id, job.title);
                       }}
                     className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded-md transition-colors"
                   >
-                      Start Job & Timesheet
+                      Start Job
                   </button>
                   </div>
                 )}
@@ -1300,30 +1332,13 @@ const TechnicianMobile: React.FC = () => {
                     <button
                       onClick={() => {
                           handleStatusChange(job.id, 'completed');
-                          endTimesheet(job.id, notes);
                       }}
                         className="w-full bg-green-600 hover:bg-green-700 text-white py-2 px-4 rounded-md transition-colors"
                     >
-                        Complete Job & Timesheet
+                        Complete Job
                     </button>
                       
                       {/* Break Time Controls */}
-                      {currentTimesheet && currentTimesheet.jobId === job.id && (
-                        <div className="flex gap-2">
-                    <button
-                            onClick={() => addBreakTime(15)}
-                            className="flex-1 bg-yellow-600 hover:bg-yellow-700 text-white py-1 px-2 rounded text-sm"
-                    >
-                            +15min Break
-                    </button>
-                          <button
-                            onClick={() => addBreakTime(30)}
-                            className="flex-1 bg-yellow-600 hover:bg-yellow-700 text-white py-1 px-2 rounded text-sm"
-                          >
-                            +30min Break
-                          </button>
-                        </div>
-                      )}
                     </div>
                   </>
                 )}
@@ -1359,7 +1374,7 @@ const TechnicianMobile: React.FC = () => {
                     {/* Completion Date */}
                     {(job as any).completed_date && (
                       <div className="text-xs text-gray-400">
-                        Completed: {(job as any).completed_date}
+                        Completed: {formatDate((job as any).completed_date)}
                       </div>
                     )}
                   </div>
@@ -1410,7 +1425,7 @@ const TechnicianMobile: React.FC = () => {
                   <span className="text-gray-400">Customer:</span> {selectedJob.end_customer_name || selectedJob.customer_name}
                 </p>
                 <p className="text-gray-300">
-                  <span className="text-gray-400">Site:</span> {selectedJob.site_address || selectedJob.customer_address}
+                  <span className="text-gray-400">Site:</span> {(selectedJob as any).site_address || (selectedJob as any).siteAddress || selectedJob.customer_address}
                 </p>
                 {selectedJob.equipment && (
                   <p className="text-gray-300">
@@ -1427,9 +1442,9 @@ const TechnicianMobile: React.FC = () => {
                     <span className="text-gray-400">Phone:</span> {selectedJob.site_phone}
                   </p>
                 )}
-                {currentLocation && selectedJob.site_address && (
+                {currentLocation && ((selectedJob as any).site_address || (selectedJob as any).siteAddress) && (
                   <p className="text-blue-400 text-sm">
-                    📍 {getDistanceToJob(selectedJob.site_address)}
+                    📍 {getDistanceToJob(((selectedJob as any).site_address || (selectedJob as any).siteAddress) as string)}
                   </p>
                 )}
               </div>
@@ -1441,11 +1456,10 @@ const TechnicianMobile: React.FC = () => {
                   <button
                     onClick={() => {
                       handleStatusChange(selectedJob.id, 'in_progress');
-                      startTimesheet(selectedJob.id, selectedJob.title);
                     }}
                     className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 px-4 rounded-lg transition-colors font-medium"
                   >
-                    🚀 Start Job & Timesheet
+                    🚀 Start Job
                   </button>
                 </div>
               )}
@@ -1486,13 +1500,19 @@ const TechnicianMobile: React.FC = () => {
               </div>
                 <textarea
                   value={notes}
-                onChange={(e) => {
-                  setNotes(e.target.value);
-                  setHasUnsavedChanges(true);
-                }}
+                  onChange={(e) => {
+                    setNotes(e.target.value);
+                    setHasUnsavedChanges(true);
+                  }}
+                  onInput={(e) => {
+                    const el = e.currentTarget as HTMLTextAreaElement;
+                    el.style.height = 'auto';
+                    el.style.height = `${el.scrollHeight}px`;
+                  }}
                   className="w-full bg-gray-700 text-white px-3 py-2 rounded-md"
-                rows={4}
-                placeholder="Describe what work was performed..."
+                  rows={4}
+                  style={{ overflow: 'hidden' }}
+                  placeholder="Describe what work was performed..."
                 />
               </div>
 
@@ -1638,38 +1658,6 @@ const TechnicianMobile: React.FC = () => {
             </div>
 
             {/* Timesheet Summary */}
-            {currentTimesheet && currentTimesheet.jobId === selectedJob.id && (
-              <div className="bg-gray-800 rounded-lg p-4">
-                <h3 className="text-lg font-semibold text-white mb-2">Current Timesheet</h3>
-                <div className="space-y-2 text-sm">
-                  <p className="text-gray-300">
-                    Started: {currentTimesheet.startTime.toLocaleTimeString()}
-                  </p>
-                  <p className="text-gray-300">
-                    Total Time: {getTotalHoursToday().toFixed(1)} hours
-                  </p>
-                  {currentTimesheet.breakTime > 0 && (
-                    <p className="text-gray-300">
-                      Break Time: {currentTimesheet.breakTime.toFixed(1)} hours
-                    </p>
-                  )}
-                </div>
-                <div className="flex gap-2 mt-3">
-                <button
-                    onClick={() => addBreakTime(15)}
-                    className="bg-yellow-600 hover:bg-yellow-700 text-white py-1 px-3 rounded text-sm"
-                  >
-                    Add Break
-                  </button>
-                  <button
-                    onClick={() => endTimesheet(selectedJob.id, notes)}
-                    className="bg-red-600 hover:bg-red-700 text-white py-1 px-3 rounded text-sm"
-                  >
-                    End Timesheet
-                  </button>
-                </div>
-              </div>
-            )}
 
             {/* Photos */}
             {selectedJob.photos && selectedJob.photos.length > 0 && (
@@ -1786,7 +1774,7 @@ const TechnicianMobile: React.FC = () => {
                 {/* Completion Date */}
                 {(selectedJob as any).completed_date && (
                   <div className="text-sm text-gray-400">
-                    <strong>Completed:</strong> {(selectedJob as any).completed_date}
+                    <strong>Completed:</strong> {formatDate((selectedJob as any).completed_date)}
                   </div>
                 )}
               </div>
@@ -1802,17 +1790,7 @@ const TechnicianMobile: React.FC = () => {
                       await handleStatusChange(selectedJob.id, 'completed');
                       setHasUnsavedChanges(false);
                       setCurrentView('list'); // Return to job list
-                      // Refresh jobs to show updated data
-                      const apiUrl = getApiUrl();
-                      const response = await fetch(`${apiUrl}/api/jobs`);
-                      const allJobs = await response.json();
-                      const technicianJobs = allJobs.filter((job: any) => 
-                        (job.technician_id === parseInt(technicianId || '0')) &&
-                        (job.status === 'pending' || 
-                         job.status === 'in progress' || 
-                         job.status === 'completed')
-                      );
-                      setJobs(technicianJobs);
+                      // Firestore subscription keeps list updated; nothing to refetch
                       addNotification('Job updated successfully!', 'success');
                     } catch (error) {
                       addNotification('Failed to update job', 'error');

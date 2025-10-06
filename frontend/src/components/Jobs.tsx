@@ -1,12 +1,47 @@
 import React, { useState, useEffect } from 'react';
+import { flushSync } from 'react-dom';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 import { db } from '../firebase';
-import { collection, getDocs } from 'firebase/firestore';
+import { collection, getDocs, query, onSnapshot } from 'firebase/firestore';
 import { getApiUrl } from '../config/api';
+import { apiClient } from '../utils/apiClient';
+import { getJobs as getJobsFromFirebase, createJob as createJobInFirebase, updateJob as updateJobInFirebase, deleteJob as deleteJobInFirebase } from '../services/firebaseService';
+import jsPDF from 'jspdf';
+
+// Safe date formatter for Firestore Timestamp, ISO string, or Date
+const formatDate = (value: any): string => {
+  if (!value) return '—';
+  try {
+    if (value?.toDate && typeof value.toDate === 'function') {
+      return value.toDate().toLocaleDateString();
+    }
+    if (value?.seconds !== undefined && value?.nanoseconds !== undefined) {
+      const millis = value.seconds * 1000 + Math.floor(value.nanoseconds / 1e6);
+      return new Date(millis).toLocaleDateString();
+    }
+    if (value instanceof Date) {
+      return value.toLocaleDateString();
+    }
+    const d = new Date(value);
+    if (!isNaN(d.getTime())) return d.toLocaleDateString();
+  } catch {}
+  return String(value);
+};
+
+// Standard sentence to always append to Action Taken
+const STANDARD_ACTION_SENTENCE = 'Tested all safety devices prior to returning equipment to service.';
+
+// Append the standard sentence to Action Taken exactly once
+const appendStandardActionTaken = (text: string): string => {
+  const base = (text || '').trim();
+  if (!base) return STANDARD_ACTION_SENTENCE;
+  if (base.endsWith(STANDARD_ACTION_SENTENCE)) return base;
+  return `${base}\n\n${STANDARD_ACTION_SENTENCE}`;
+};
 
 interface Job {
-  id: number;
+  id: string;
   title: string;
   description: string;
   status: string;
@@ -17,10 +52,16 @@ interface Job {
   technician_name: string;
   service_report: string;
   service_type?: string;
-  pdf_generated?: boolean;
   // Optional foreign keys used when editing/creating a job
   customer_id?: number;
   technician_id?: number;
+  photos?: Array<{
+    url: string;
+    caption: string;
+    timestamp: any;
+    category?: string;
+    isUploading?: boolean;
+  }>;
 }
 
 interface Customer {
@@ -30,13 +71,15 @@ interface Customer {
 }
 
 interface Technician {
-  id: number;
+  id: string | number;
   name: string;
   email: string;
 }
 
 const Jobs: React.FC = () => {
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [refreshKey, setRefreshKey] = useState(0);
+  
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [technicians, setTechnicians] = useState<Technician[]>([]);
   const [equipment, setEquipment] = useState<any[]>([]);
@@ -44,9 +87,7 @@ const Jobs: React.FC = () => {
   const [editingJob, setEditingJob] = useState<Job | null>(null);
   const [filter, setFilter] = useState('pending');
   const [serviceTypeFilter, setServiceTypeFilter] = useState('');
-  const [showPdfViewer, setShowPdfViewer] = useState(false);
-  const [selectedPdfUrl, setSelectedPdfUrl] = useState<string>('');
-  const [selectedJobs, setSelectedJobs] = useState<number[]>([]);
+  const [selectedJobs, setSelectedJobs] = useState<string[]>([]);
   const [isSelectAll, setIsSelectAll] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
 
@@ -70,7 +111,8 @@ const Jobs: React.FC = () => {
     serviceType: '',
     partsJson: '',
     arrivalTime: '',
-    departureTime: ''
+    departureTime: '',
+    technician_name: ''
   });
 
   const [clients, setClients] = useState<any[]>([]);
@@ -80,29 +122,82 @@ const Jobs: React.FC = () => {
   // Parts management state
   const [parts, setParts] = useState<Array<{ description: string; qty: number }>>([]);
   const [availableParts, setAvailableParts] = useState<Array<{ id: string; partNumber: string; description: string; unitType: 'qty' | 'hours' }>>([]);
+  
+  // Debug parts changes
+  useEffect(() => {
+    console.log('🔍 Admin parts list changed:', parts);
+  }, [parts]);
   const [partsSearch, setPartsSearch] = useState<string>('');
   const [filteredParts, setFilteredParts] = useState<Array<{ id: string; partNumber: string; description: string; unitType: 'qty' | 'hours' }>>([]);
   const [showPartsDropdown, setShowPartsDropdown] = useState<boolean>(false);
 
   useEffect(() => {
-    fetchJobs();
+    // Set up real-time jobs listener
+    const q = query(collection(db, 'jobs'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      try {
+        console.log(`Received ${snapshot.docs.length} jobs from Firestore for admin`);
+        const allJobs = snapshot.docs.map((d) => {
+          const data: any = d.data();
+          // Safely convert all Firestore Timestamps to strings
+          const safeConvert = (val: any) => {
+            if (!val) return null;
+            if (val?.toDate && typeof val.toDate === 'function') return val.toDate().toISOString();
+            if (val?.seconds !== undefined && val?.nanoseconds !== undefined) {
+              const millis = val.seconds * 1000 + Math.floor(val.nanoseconds / 1e6);
+              return new Date(millis).toISOString();
+            }
+            return val;
+          };
+          return {
+            id: d.id,
+            ...data,
+            created_at: safeConvert(data.created_at),
+            updated_at: safeConvert(data.updated_at),
+            completed_date: safeConvert(data.completed_date),
+            scheduled_date: safeConvert(data.scheduled_date),
+            requested_date: safeConvert(data.requested_date),
+            due_date: safeConvert(data.due_date),
+          } as Job & any;
+        });
+
+        // Filter out deleted jobs
+        const visible = allJobs.filter((j: any) => j.deleted !== true);
+        
+        // Sort by created_at desc
+        visible.sort((a: any, b: any) => {
+          const aTime = a.created_at instanceof Date ? a.created_at.getTime() : new Date(a.created_at || 0).getTime();
+          const bTime = b.created_at instanceof Date ? b.created_at.getTime() : new Date(b.created_at || 0).getTime();
+          return bTime - aTime;
+        });
+        
+        setJobs(visible);
+        console.log(`Set ${visible.length} jobs in admin state`);
+      } catch (error) {
+        console.error('Error processing jobs snapshot:', error);
+      }
+    });
+
     fetchCustomers();
     fetchTechnicians();
     loadClients();
-    loadParts();
     fetchEquipment();
+    fetchParts();
+    
+    // Cleanup listener on unmount
+    return () => unsubscribe();
   }, []);
+
+  // Force re-render when filter changes
+  useEffect(() => {
+    console.log('Filter changed to:', filter);
+  }, [filter]);
 
   const fetchEquipment = async () => {
     try {
-      const apiUrl = getApiUrl();
-      
-      const response = await fetch(`${apiUrl}/api/equipment`);
-      if (response.ok) {
-        const data = await response.json();
-        console.log('Fetched equipment data:', data);
-        setEquipment(data);
-      }
+      const snap = await getDocs(collection(db, 'equipment'));
+      const data = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) })) as any;
+      setEquipment(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error('Error fetching equipment:', error);
     }
@@ -144,73 +239,120 @@ const Jobs: React.FC = () => {
     setClients(snap.docs.map(d => ({ id: d.id, ...(d.data() as any) })) as any);
   };
 
-  const loadParts = async () => {
+  const fetchParts = async () => {
     try {
-      const snap = await getDocs(collection(db, 'parts'));
-      const partsData = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) })) as any;
+      console.log('🔍 Fetching parts from database...');
+      const partsSnapshot = await getDocs(collection(db, 'parts'));
+      const partsData = partsSnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as Array<{ id: string; partNumber: string; description: string; unitType: 'qty' | 'hours' }>;
+      
       setAvailableParts(partsData);
+      console.log('🔍 Loaded parts from database:', partsData.length, 'parts');
+      console.log('🔍 First few parts:', partsData.slice(0, 3));
     } catch (error) {
-      console.error('Error loading parts:', error);
+      console.error('Error fetching parts from Firebase:', error);
     }
   };
 
+  // No longer needed - using manual parts input
+
   // Update part quantity
   const updatePartQuantity = (index: number, newQty: number) => {
+    console.log('🔍 updatePartQuantity called:', { index, newQty, currentQty: parts[index]?.qty });
     if (newQty < 0) return;
     const updatedParts = [...parts];
     updatedParts[index].qty = newQty;
+    console.log('🔍 Setting parts to:', updatedParts);
     setParts(updatedParts);
   };
 
   // Filter parts based on search
-  useEffect(() => {
-    if (partsSearch.trim()) {
-      const filtered = availableParts.filter(part => 
-        part.description.toLowerCase().includes(partsSearch.toLowerCase()) ||
-        part.partNumber.toLowerCase().includes(partsSearch.toLowerCase())
-      );
-      setFilteredParts(filtered.slice(0, 10)); // Limit to 10 results
+  const handlePartsSearch = (searchTerm: string) => {
+    console.log('🔍 Parts search triggered:', searchTerm);
+    console.log('🔍 Available parts count:', availableParts.length);
+    setPartsSearch(searchTerm);
+    
+    if (searchTerm.trim() === '') {
+      // Show all parts when search is empty
+      setFilteredParts(availableParts);
+      console.log('🔍 Showing all parts:', availableParts.length);
     } else {
-      setFilteredParts([]);
+      // Filter parts based on search term
+      const filtered = availableParts.filter(part => {
+        const partNumber = part.partNumber?.toLowerCase() || '';
+        const description = part.description?.toLowerCase() || '';
+        const searchLower = searchTerm.toLowerCase();
+        return partNumber.includes(searchLower) || description.includes(searchLower);
+      });
+      setFilteredParts(filtered);
+      console.log('🔍 Filtered parts:', filtered.length, 'matches');
+      console.log('🔍 First few filtered parts:', filtered.slice(0, 3));
     }
-  }, [partsSearch, availableParts]);
+    setShowPartsDropdown(true);
+  };
 
-  // Close parts dropdown when clicking outside
+  // Add part to list
+  const addPartToList = (part: { id: string; partNumber: string; description: string; unitType: 'qty' | 'hours' }) => {
+    console.log('🔍 Adding part to admin list:', part.description);
+    console.log('🔍 Current parts before adding:', parts);
+    const newParts = [...parts, { 
+      description: part.description, 
+      qty: 1
+    }];
+    console.log('🔍 New parts after adding:', newParts);
+    setParts(newParts);
+    setPartsSearch('');
+    setShowPartsDropdown(false);
+  };
+
+  // Initialize filtered parts when available parts are loaded
+  useEffect(() => {
+    if (availableParts.length > 0) {
+      setFilteredParts(availableParts);
+      console.log('🔍 Initialized filtered parts with all available parts:', availableParts.length);
+    }
+  }, [availableParts]);
+
+  // Close dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (showPartsDropdown) {
+      const target = event.target as HTMLElement;
+      if (!target.closest('.parts-search-container')) {
         setShowPartsDropdown(false);
       }
     };
-    
-    if (showPartsDropdown) {
-      document.addEventListener('mousedown', handleClickOutside);
-      return () => document.removeEventListener('mousedown', handleClickOutside);
-    }
-  }, [showPartsDropdown]);
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   const fetchJobs = async () => {
     try {
-      const apiUrl = getApiUrl();
-      console.log('Fetching jobs from:', `${apiUrl}/api/jobs`);
-      const response = await fetch(`${apiUrl}/api/jobs`);
-      console.log('API Response status:', response.status);
-      const data = await response.json();
-      console.log('Fetched jobs from API:', data);
-      console.log('Jobs count:', data.length);
-      // Set all jobs - filtering will be done in the component
-      setJobs(data);
+      const data = await getJobsFromFirebase();
+      const normalized = (Array.isArray(data) ? data : []).map((j: any) => ({
+        ...j,
+        status: j.status || 'pending'
+      }));
+      const visible = normalized.filter((j: any) => j.deleted !== true);
+      
+      // Force synchronous state update and refresh
+      flushSync(() => {
+        setJobs(visible as any);
+        setRefreshKey(prev => prev + 1);
+      });
     } catch (error) {
-      console.error('Error fetching jobs:', error);
+      console.error('Error fetching jobs (Firebase):', error);
+      setJobs([]);
     }
   };
 
   const fetchCustomers = async () => {
     try {
-      const apiUrl = getApiUrl();
-      const response = await fetch(`${apiUrl}/api/customers`);
-      const data = await response.json();
-      setCustomers(data);
+      const snap = await getDocs(collection(db, 'customers'));
+      const data = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) })) as any;
+      setCustomers(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error('Error fetching customers:', error);
     }
@@ -218,100 +360,119 @@ const Jobs: React.FC = () => {
 
   const fetchTechnicians = async () => {
     try {
-      const apiUrl = getApiUrl();
-      const response = await fetch(`${apiUrl}/api/technicians`);
-      const data = await response.json();
+      // Use Firestore technicians so admin list and job editor match
+      const snap = await getDocs(collection(db, 'technicians'));
+      const data = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) })) as any;
       setTechnicians(data);
     } catch (error) {
-      console.error('Error fetching technicians:', error);
+      console.error('Error fetching technicians from Firestore:', error);
     }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const apiUrl = getApiUrl();
-      const url = editingJob
-        ? `${apiUrl}/api/jobs/${editingJob.id}`
-        : `${apiUrl}/api/jobs`;
-      
-      const method = editingJob ? 'PUT' : 'POST';
-      
+      // Prepare payload
       const selectedSite = sites.find((s:any)=>s.id===formData.siteId);
       const siteAddress = selectedSite ? [selectedSite.address, selectedSite.suburb, selectedSite.state, selectedSite.postcode].filter(Boolean).join(', ') : '';
       const payload: any = {
         ...formData,
-        customer_id: formData.customer_id || '1',
+        // Persist selected relationships to Firestore
+        client_id: formData.clientId || '',
+        end_customer_id: formData.endCustomerId || '',
+        site_id: formData.siteId || '',
+        // Ensure equipment type is explicitly saved
+        equipment: formData.equipment || '',
         title: formData.equipment || 'Job',
         description: formData.faultReported || '',
         siteAddress,
         clientName: (clients.find((c:any)=>c.id===formData.clientId)?.name) || '',
         endCustomerName: (endCustomers.find((c:any)=>c.id===formData.endCustomerId)?.name) || '',
         // Include inspector/technician completion fields
-        actionTaken: formData.actionTaken,
+        actionTaken: appendStandardActionTaken(formData.actionTaken),
         serviceType: formData.serviceType,
         partsJson: JSON.stringify(parts),
         arrivalTime: formData.arrivalTime,
-        departureTime: formData.departureTime
+        departureTime: formData.departureTime,
+        technician_name: formData.technician_name,
+        // Clear old field names to prevent confusion
+        action_taken: null,
+        service_type: null,
+        parts_json: null,
+        arrival_time: null,
+        departure_time: null
       };
-      const response = await fetch(url, {
-        method,
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-      });
-
-      if (response.ok) {
-        fetchJobs();
-        
-        setShowModal(false);
-        setEditingJob(null);
-        setParts([]);
-        setFormData({
-          customer_id: '',
-          technician_id: '',
-          title: '',
-          description: '',
-          requestedDate: '',
-          dueDate: '',
-          clientId: '',
-          endCustomerId: '',
-          siteId: '',
-          siteContact: '',
-          sitePhone: '',
-          orderNumber: '',
-          equipment: '',
-          faultReported: '',
-          // Inspector/Technician completion fields
-          actionTaken: '',
-          serviceType: '',
-          partsJson: '',
-          arrivalTime: '',
-          departureTime: ''
-        });
+    
+      if (editingJob) {
+        await updateJobInFirebase(String(editingJob.id), payload);
       } else {
-        const msg = await response.text();
-        console.error('Save failed', msg);
-        alert('Failed to save job: ' + msg);
+        await createJobInFirebase(payload);
       }
+
+      // Simple refresh - just like Visnu codebase
+      // Jobs will update automatically via real-time listener
+      
+      // Small delay to ensure React processes the state update
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      setShowModal(false);
+      setEditingJob(null);
+      setParts([]);
+      setFormData({
+        customer_id: '',
+        technician_id: '',
+        title: '',
+        description: '',
+        requestedDate: '',
+        dueDate: '',
+        clientId: '',
+        endCustomerId: '',
+        siteId: '',
+        siteContact: '',
+        sitePhone: '',
+        orderNumber: '',
+        equipment: '',
+        faultReported: '',
+        // Inspector/Technician completion fields
+        actionTaken: '',
+        serviceType: '',
+        partsJson: '',
+        arrivalTime: '',
+        departureTime: '',
+        technician_name: ''
+      });
     } catch (error) {
       console.error('Error saving job:', error);
+      alert('Failed to save job: ' + (error as Error).message);
     }
   };
 
-  const handleEdit = (job: Job) => {
-    setEditingJob(job);
-    const anyJob: any = job as any;
+  const handleEdit = async (job: Job) => {
+    alert('Edit button clicked!');
+    alert('Job ID: ' + job.id);
+    alert('Job title: ' + job.title);
+    console.log('🔍 EDIT BUTTON CLICKED!');
+    console.log('🔍 Opening amend modal for job:', job.id);
+    console.log('🔍 Job data structure:', job);
+    
+    // Simple approach - just like Visnu codebase
+    const jobToEdit = job;
+    
+    setEditingJob(jobToEdit);
+    const anyJob: any = jobToEdit as any;
     const clientId = anyJob.client_id || anyJob.clientId || '';
     const endCustomerId = anyJob.end_customer_id || anyJob.endCustomerId || '';
     const siteId = anyJob.site_id || anyJob.siteId || '';
-    console.log('Editing job with clientId:', clientId, 'endCustomerId:', endCustomerId, 'siteId:', siteId);
-    setFormData({
-      customer_id: job.customer_id?.toString() || '',
-      technician_id: job.technician_id?.toString() || '',
-      title: job.title,
-      description: job.description || '',
+    
+    console.log('🔍 Extracted IDs:', { clientId, endCustomerId, siteId });
+    console.log('🔍 Job title:', jobToEdit.title);
+    console.log('🔍 Job description:', jobToEdit.description);
+    
+    const formDataToSet = {
+      customer_id: jobToEdit.customer_id?.toString() || '',
+      technician_id: jobToEdit.technician_id?.toString() || '',
+      title: jobToEdit.title || '',
+      description: jobToEdit.description || '',
       requestedDate: anyJob.requested_date || anyJob.requestedDate || '',
       dueDate: anyJob.due_date || anyJob.dueDate || '',
       clientId,
@@ -323,22 +484,31 @@ const Jobs: React.FC = () => {
       equipment: anyJob.equipment || '',
       faultReported: anyJob.fault_reported || anyJob.faultReported || '',
       // Inspector/Technician completion fields
-      actionTaken: anyJob.action_taken || '',
-      serviceType: anyJob.service_type || '',
+      actionTaken: anyJob.actionTaken || anyJob.action_taken || '',
+      serviceType: anyJob.serviceType || anyJob.service_type || '',
       partsJson: anyJob.parts_json || '',
       arrivalTime: anyJob.arrival_time || anyJob.arrivalTime || '',
-      departureTime: anyJob.departure_time || anyJob.departureTime || ''
-    });
+      departureTime: anyJob.departure_time || anyJob.departureTime || '',
+      technician_name: anyJob.technician_name || ''
+    };
     
-    // Load parts data for completed jobs
-    if (job.status === 'completed') {
-      try {
-        const existingParts = anyJob.parts_json ? JSON.parse(anyJob.parts_json) : [];
-        setParts(existingParts);
-      } catch (error) {
-        console.error('Error parsing parts JSON:', error);
-        setParts([]);
+    console.log('🔍 Form data to set:', formDataToSet);
+    setFormData(formDataToSet);
+    
+    // Load parts data
+    try {
+      let existingParts = [];
+      if (anyJob.parts_json) {
+        existingParts = JSON.parse(anyJob.parts_json);
+      } else if (anyJob.partsJson) {
+        existingParts = JSON.parse(anyJob.partsJson);
+      } else if (anyJob.parts) {
+        existingParts = Array.isArray(anyJob.parts) ? anyJob.parts : [];
       }
+      setParts(existingParts);
+    } catch (error) {
+      console.error('Error parsing parts data:', error);
+      setParts([]);
     }
     
     // preload dependent dropdowns and client contact info
@@ -376,128 +546,60 @@ const Jobs: React.FC = () => {
     setShowModal(true);
   };
 
-  const handleStatusChange = async (jobId: number, newStatus: string) => {
+  const handleStatusChange = async (jobId: string, newStatus: string) => {
     try {
-      const apiUrl = getApiUrl();
-      await fetch(`${apiUrl}/api/jobs/${jobId}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ status: newStatus }),
-      });
-      fetchJobs();
+      // Prepare updates based on status change
+      const updates: any = { status: newStatus };
+      
+      // If changing from completed to another status, clear completed_date
+      if (newStatus !== 'completed') {
+        updates.completed_date = null;
+      }
+      
+      // If changing to completed, set completed_date
+      if (newStatus === 'completed') {
+        updates.completed_date = new Date().toISOString();
+      }
+      
+      await updateJobInFirebase(String(jobId), updates);
+      
+      // Simple refresh - just like Visnu codebase
+      // Jobs will update automatically via real-time listener
+      
+      // Small delay to ensure React processes the state update
+      await new Promise(resolve => setTimeout(resolve, 100));
     } catch (error) {
       console.error('Error updating job status:', error);
+      alert(`Failed to update job status: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      // Jobs will update automatically via real-time listener
     }
   };
 
-  const handleDelete = async (jobId: number) => {
+  const handleDelete = async (jobId: string) => {
     if (!window.confirm('Delete this job? This cannot be undone.')) return;
     try {
-      const apiUrl = getApiUrl();
-      await fetch(`${apiUrl}/api/jobs/${jobId}`, { method: 'DELETE' });
-      fetchJobs();
+      // Hard delete in Firestore
+      await deleteJobInFirebase(String(jobId));
+      // Optimistically update UI
+      setJobs(prev => prev.filter(j => j.id !== jobId));
+      // Jobs will update automatically via real-time listener
     } catch (error) {
-      console.error('Error deleting job:', error);
-      alert('Failed to delete job');
-    }
-  };
-
-  const handleGeneratePDF = async (jobId: number) => {
-    try {
-      const apiUrl = getApiUrl();
-      
-      const response = await fetch(`${apiUrl}/api/pdf/job/${jobId}`);
-      
-      if (response.ok) {
-        const blob = await response.blob();
-        const url = window.URL.createObjectURL(blob);
-        
-        // Create download link with explicit save dialog
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `service-report-${jobId}.pdf`;
-        a.style.display = 'none';
-        a.setAttribute('target', '_blank');
-        
-        // Add to DOM, click, then remove
-        document.body.appendChild(a);
-        a.click();
-        
-        // Clean up
-        setTimeout(() => {
-          window.URL.revokeObjectURL(url);
-          document.body.removeChild(a);
-        }, 100);
-        
-        // Refresh jobs to update PDF status
-        fetchJobs();
-      } else {
-        alert('Failed to generate PDF report');
+      console.error('Hard delete failed, attempting soft delete:', error);
+      try {
+        await updateJobInFirebase(String(jobId), { deleted: true });
+        setJobs(prev => prev.filter(j => j.id !== jobId));
+        // Jobs will update automatically via real-time listener
+      } catch (err2) {
+        console.error('Soft delete also failed:', err2);
+        alert('Failed to delete job');
       }
-    } catch (error) {
-      console.error('Error generating PDF:', error);
-      alert('Failed to generate PDF report');
     }
   };
 
-  const handleViewPDF = async (jobId: number) => {
-    try {
-      const apiUrl = getApiUrl();
-      
-      const response = await fetch(`${apiUrl}/api/pdf/job/${jobId}`);
-      
-      if (response.ok) {
-        const blob = await response.blob();
-        const url = window.URL.createObjectURL(blob);
-        setSelectedPdfUrl(url);
-        setShowPdfViewer(true);
-      } else {
-        alert('Failed to view PDF report');
-      }
-    } catch (error) {
-      console.error('Error viewing PDF:', error);
-      alert('Failed to view PDF report');
-    }
-  };
 
-  const handleDownloadPDF = async (jobId: number) => {
-    try {
-      const apiUrl = getApiUrl();
-      
-      const response = await fetch(`${apiUrl}/api/pdf/job/${jobId}`);
-      
-      if (response.ok) {
-        const blob = await response.blob();
-        const url = window.URL.createObjectURL(blob);
-        
-        // Create download link with explicit save dialog
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `service-report-${jobId}.pdf`;
-        a.style.display = 'none';
-        a.setAttribute('target', '_blank');
-        
-        // Add to DOM, click, then remove
-        document.body.appendChild(a);
-        a.click();
-        
-        // Clean up
-        setTimeout(() => {
-          window.URL.revokeObjectURL(url);
-          document.body.removeChild(a);
-        }, 100);
-      } else {
-        alert('Failed to download PDF report');
-      }
-    } catch (error) {
-      console.error('Error downloading PDF:', error);
-      alert('Failed to download PDF report');
-    }
-  };
 
-  const handleJobSelection = (jobId: number) => {
+
+  const handleJobSelection = (jobId: string) => {
     setSelectedJobs(prev => {
       if (prev.includes(jobId)) {
         return prev.filter(id => id !== jobId);
@@ -525,12 +627,11 @@ const Jobs: React.FC = () => {
     }
 
     try {
-      const apiUrl = getApiUrl();
-      
-      const response = await fetch(`${apiUrl}/api/send-reports`, {
+      const response = await fetch(`${getApiUrl()}/api/send-reports`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('adminToken')}`
         },
         body: JSON.stringify({
           jobIds: selectedJobs
@@ -541,7 +642,7 @@ const Jobs: React.FC = () => {
         alert(`Successfully sent ${selectedJobs.length} report(s) to customers`);
         setSelectedJobs([]);
         setIsSelectAll(false);
-        fetchJobs(); // Refresh the jobs list
+        // Jobs will update automatically via real-time listener
       } else {
         const error = await response.json();
         alert(`Failed to send reports: ${error.message || 'Unknown error'}`);
@@ -552,7 +653,551 @@ const Jobs: React.FC = () => {
     }
   };
 
+  // Report generation functions - Original working system
+  const generatePDF = async (job: any) => {
+    const doc = new jsPDF();
+    
+    // Date formatting function
+    const formatDate = (date: any) => {
+      try {
+        if (date && typeof date === 'object' && (date as any).toDate) {
+          return (date as any).toDate().toLocaleDateString('en-AU');
+        } else if (date) {
+          return new Date(date).toLocaleDateString('en-AU');
+        }
+        return 'N/A';
+      } catch (e) {
+        return 'N/A';
+      }
+    };
+    
+    // Get technician name from ID
+    let technicianName = 'N/A';
+    if (job.technician || job.technician_name || job.technicianName || job.technician_id) {
+      const technicianId = job.technician || job.technician_name || job.technicianName || job.technician_id;
+      console.log('🔍 Looking up technician with ID:', technicianId);
+      try {
+        const { getDoc, doc } = await import('firebase/firestore');
+        const { db } = await import('../firebase');
+        
+        // Try to get the document directly by ID
+        const technicianDocRef = doc(db, 'technicians', technicianId);
+        const technicianDoc = await getDoc(technicianDocRef);
+        
+        console.log('🔍 Document exists:', technicianDoc.exists());
+        
+        if (technicianDoc.exists()) {
+          const technicianData = technicianDoc.data();
+          console.log('🔍 Technician data:', technicianData);
+          technicianName = technicianData.name || 
+                          technicianData.fullName || 
+                          (technicianData.firstName && technicianData.lastName ? 
+                            `${technicianData.firstName} ${technicianData.lastName}` : 
+                            technicianId);
+        } else {
+          technicianName = technicianId; // Fallback to ID if document not found
+        }
+      } catch (error) {
+        console.log('Error fetching technician:', error);
+        technicianName = technicianId; // Fallback to ID
+      }
+    }
+    
+    const pageWidth = doc.internal.pageSize.width;
+    let currentY = 20;
+
+    // Professional header with blue styling
+    // Header background box - dark blue-gray
+    doc.setFillColor(45, 55, 70); // Dark blue-gray background
+    doc.rect(15, 15, pageWidth - 30, 45, 'F'); // Filled rectangle
+    
+    // Header border - darker blue
+    doc.setDrawColor(30, 40, 55); // Darker blue border
+    doc.setLineWidth(0.8);
+    doc.rect(15, 15, pageWidth - 30, 45); // Border rectangle
+    
+    // Left side company info - white text on blue background
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(255, 255, 255); // White text on blue background
+    doc.text('18 Newell Close', 20, currentY);
+    currentY += 4;
+    doc.text('Taylors Lakes 3038', 20, currentY);
+    currentY += 4;
+    doc.text('0488 038 898', 20, currentY);
+    currentY += 4;
+    doc.text('snpelec@gmail.com', 20, currentY);
+    currentY += 4;
+    
+    // Center - Service Report title with blue styling
+    doc.setFontSize(18);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(255, 255, 255); // White text on blue background
+    doc.text('SERVICE REPORT v2.0', pageWidth / 2 - 50, 25);
+    
+    // Right side - Logo and Company details
+    try {
+      // Add the SNP logo image on the right side
+      const logoWidth = 40;
+      const logoHeight = 20;
+      doc.addImage('/snp-logo.jpg', 'JPEG', pageWidth - 60, 15, logoWidth, logoHeight);
+    } catch (error) {
+      console.log('Logo not found, using text fallback:', error);
+      // Fallback to text if logo not found
+      doc.setFontSize(16);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(255, 140, 0); // Orange
+      doc.text('SNP', pageWidth - 60, 20);
+      doc.setFontSize(12);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(0, 0, 0);
+      doc.text('electrical', pageWidth - 60, 30);
+    }
+    
+    // Company details below logo - white text on blue background
+    doc.setFontSize(12);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(255, 255, 255); // White text on blue background
+    doc.text('REC 16208', pageWidth - 60, 40);
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'normal');
+    doc.text('ABN: 22 592 137 642', pageWidth - 60, 46);
+    
+    currentY = 70;
+
+    // Helper: split text to size with consistent line height (prevents overlap)
+    const renderLines = (lines: string[], x: number, startY: number, lineHeight = 7, draw = true) => {
+      let cursorY = startY;
+      for (const line of lines) {
+        if (draw) doc.text(line || ' ', x, cursorY);
+        cursorY += lineHeight;
+      }
+      return cursorY;
+    };
+
+    // Helper function to wrap text using splitTextToSize. If draw=false, only measures.
+    const wrapText = (text: string, maxWidth: number, x: number, y: number, draw: boolean = true) => {
+      const lines = doc.splitTextToSize(String(text || ''), maxWidth) as string[];
+      return renderLines(lines, x, y, 7, draw);
+    };
+
+    // Helper: wrap multi-paragraph text (handles \n and blank lines). If draw=false, only measures.
+    const wrapTextBlock = (text: string, maxWidth: number, x: number, y: number, draw: boolean = true) => {
+      const paragraphs = String(text || '').replace(/\r\n/g, '\n').split('\n');
+      let cursorY = y;
+      for (let i = 0; i < paragraphs.length; i++) {
+        const p = paragraphs[i];
+        if (p.trim().length === 0) {
+          // preserve blank line spacing
+          cursorY += 7;
+          continue;
+        }
+        const lines = doc.splitTextToSize(p, maxWidth) as string[];
+        cursorY = renderLines(lines, x, cursorY, 7, draw);
+      }
+      return cursorY;
+    };
+
+    // Original simple layout - compact for 20+ parts
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(0, 0, 0);
+    
+    // Job details section with blue styling
+    // Background for job details - light blue-gray
+    doc.setFillColor(240, 245, 250); // Light blue-gray background
+    doc.rect(15, currentY - 5, pageWidth - 30, 25, 'F');
+    
+    // Border for job details - blue border
+    doc.setDrawColor(100, 130, 160);
+    doc.setLineWidth(0.5);
+    doc.rect(15, currentY - 5, pageWidth - 30, 25);
+    
+    // Service Report Number and Date - blue styling
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
+    doc.setTextColor(45, 55, 70); // Dark blue-gray labels
+    doc.text('Service Report Number:', 20, currentY);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(30, 30, 30); // Dark text for values
+    doc.text(String(job.snpid || job.id || 'N/A'), 20 + 50, currentY);
+    
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(45, 55, 70); // Dark blue-gray labels
+    doc.text('Date:', pageWidth / 2 + 10, currentY);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(30, 30, 30); // Dark text for values
+    doc.text(job.completed_date ? formatDate(job.completed_date) : 'N/A', pageWidth / 2 + 10 + 50, currentY);
+    currentY += 8;
+    
+    // Order Number
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(45, 55, 70); // Dark blue-gray labels
+    doc.text('Order Number:', 20, currentY);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(255, 0, 0); // Red color for order number data
+    doc.text(job.orderNumber || job.order_number || 'N/A', 20 + 50, currentY);
+    currentY += 8;
+    
+    // Customer details section - NO border (like your reference)
+    // Customer Name
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(45, 55, 70);
+    doc.text("Customer's Name:", 20, currentY);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(30, 30, 30);
+    doc.text(job.clientName || 'N/A', 20 + 50, currentY);
+    currentY += 8;
+    
+    // Site Name
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(45, 55, 70);
+    doc.text('Site Name:', 20, currentY);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(30, 30, 30);
+    doc.text(job.endCustomerName || 'N/A', 20 + 50, currentY);
+    currentY += 8;
+    
+    // Site Address
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(45, 55, 70);
+    doc.text('Site:', 20, currentY);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(30, 30, 30);
+    doc.text(job.siteAddress || 'N/A', 20 + 50, currentY);
+    currentY += 8;
+    
+    // Site Contact and Phone Number
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(45, 55, 70);
+    doc.text('Site Contact:', 20, currentY);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(30, 30, 30);
+    doc.text(job.siteContact || job.clientContactName || 'N/A', 20 + 50, currentY);
+    
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(45, 55, 70);
+    doc.text('Phone Number:', pageWidth / 2 + 10, currentY);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(30, 30, 30);
+    doc.text(job.sitePhone || job.clientPhone || 'N/A', pageWidth / 2 + 10 + 50, currentY);
+    currentY += 8;
+    
+    // Equipment
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(45, 55, 70);
+    doc.text('Equipment:', 20, currentY);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(30, 30, 30);
+    doc.text(job.equipment || 'N/A', 20 + 50, currentY);
+    currentY += 8;
+    
+    // Service Type
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(45, 55, 70);
+    doc.text('Service Type:', 20, currentY);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(255, 0, 0); // Red color for service type data
+    doc.text(job.serviceType || job.service_type || 'N/A', 20 + 50, currentY);
+    currentY += 8;
+    
+    // Fault Reported section with border
+    currentY += 10; // Add space before fault section
+    doc.setFillColor(248, 250, 252); // Very light blue background
+    doc.rect(15, currentY - 5, pageWidth - 30, 25, 'F');
+    doc.setDrawColor(180, 200, 220); // Blue border
+    doc.setLineWidth(0.3);
+    doc.rect(15, currentY - 5, pageWidth - 30, 25);
+    
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(45, 55, 70);
+    doc.text('Fault Reported:', 20, currentY);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(30, 30, 30);
+    if (job.faultReported) {
+      wrapText(job.faultReported, pageWidth - 40, 20, currentY + 6);
+    } else {
+      doc.text('No fault reported', 20, currentY + 6);
+    }
+    currentY += 20;
+    
+    // Action Taken section with dynamic height and multi-page support
+    currentY += 10; // Add space before action section
+    const actionBoxLeft = 15;
+    const actionBoxWidth = pageWidth - 30;
+    let actionLabelY = currentY;
+
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(45, 55, 70);
+    doc.text('Action Taken:', 20, actionLabelY);
+
+    // Prepare text
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(30, 30, 30);
+    const actionTextRaw = (job as any).actionTaken || (job as any).action_taken || '';
+    const actionText = appendStandardActionTaken(actionTextRaw);
+
+    // Split into paragraphs and lines using splitTextToSize (robust for 1500-2000 chars)
+    const paragraphs = String(actionText || '').replace(/\r\n/g, '\n').split('\n');
+    const allLines: string[] = [];
+    for (const p of paragraphs) {
+      if (p.trim().length === 0) {
+        allLines.push('');
+      } else {
+        const lines = doc.splitTextToSize(p, pageWidth - 40) as string[];
+        allLines.push(...lines);
+      }
+    }
+
+    const lineHeight = 8; // generous spacing to avoid overlap
+    let cursorIndex = 0;
+    const pageBottom = 250; // keep consistent with parts paging
+
+    while (cursorIndex <= allLines.length) {
+      const startY = actionLabelY + 6;
+      const available = pageBottom - startY - 5; // leave small padding
+      const maxLinesThisPage = Math.max(1, Math.floor(available / lineHeight));
+      const endIndexExclusive = Math.min(allLines.length, cursorIndex + maxLinesThisPage);
+      const linesThisPage = allLines.slice(cursorIndex, endIndexExclusive);
+
+      // Compute box height for this page
+      const contentHeight = Math.max(10, linesThisPage.length * lineHeight);
+      const boxTop = actionLabelY - 5;
+      const boxHeight = Math.max(25, contentHeight + 12);
+
+      // Draw background and border for this page section
+      doc.setFillColor(248, 250, 252);
+      doc.rect(actionBoxLeft, boxTop, actionBoxWidth, boxHeight, 'F');
+      doc.setDrawColor(180, 200, 220);
+      doc.setLineWidth(0.3);
+      doc.rect(actionBoxLeft, boxTop, actionBoxWidth, boxHeight);
+
+      // Draw label again (ensures it shows on page splits only once per section)
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(45, 55, 70);
+      doc.text('Action Taken:', 20, actionLabelY);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(30, 30, 30);
+
+      // Render lines
+      let textY = startY;
+      for (const line of linesThisPage) {
+        doc.text(line || ' ', 20, textY);
+        textY += lineHeight;
+      }
+
+      cursorIndex = endIndexExclusive;
+      if (cursorIndex < allLines.length) {
+        // More lines remain → add page and continue
+        doc.addPage();
+        actionLabelY = 20; // top margin on new page
+      } else {
+        // Advance currentY to below the box
+        currentY = boxTop + boxHeight + 5;
+        break;
+      }
+    }
+    
+    // Serviced By - no border, moved down 2 lines
+    currentY += 16; // Add 2 lines of spacing (8 pixels per line)
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(45, 55, 70);
+    doc.text('Serviced By:', 20, currentY);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(30, 30, 30);
+    doc.text(technicianName, 20 + 50, currentY);
+    currentY += 15;
+    
+    // Parts/Service table with blue styling
+    // Table header background - dark blue
+    doc.setFillColor(45, 55, 70); // Dark blue-gray header background
+    doc.rect(15, currentY - 5, pageWidth - 30, 12, 'F');
+    
+    // Table header border - darker blue
+    doc.setDrawColor(30, 40, 55);
+    doc.setLineWidth(0.5);
+    doc.rect(15, currentY - 5, pageWidth - 30, 12);
+    
+    // Table header text - white on blue
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(255, 255, 255); // White text on blue background
+    doc.text('QTY', 20, currentY);
+    doc.text('Description', 60, currentY);
+    currentY += 10;
+    
+    // Get parts data
+    let parts = [];
+    console.log('🔍 PDF Generation v2.0 - Job data:', {
+      id: job.id,
+      title: job.title,
+      partsJson: job.partsJson,
+      parts_json: job.parts_json,
+      parts: job.parts,
+      timestamp: new Date().toISOString()
+    });
+    
+    if (job.partsJson) {
+      try {
+        parts = JSON.parse(job.partsJson);
+        console.log('🔍 PDF Generation - Parsed partsJson:', parts);
+      } catch (e) {
+        console.log('Error parsing partsJson:', e);
+      }
+    } else if (job.parts_json) {
+      try {
+        parts = JSON.parse(job.parts_json);
+        console.log('🔍 PDF Generation - Parsed parts_json:', parts);
+      } catch (e) {
+        console.log('Error parsing parts_json:', e);
+      }
+    } else if (job.parts) {
+      parts = job.parts;
+      console.log('🔍 PDF Generation - Using parts array:', parts);
+    }
+    
+    console.log('🔍 PDF Generation - Final parts array:', parts);
+    console.log('🔍 PDF Generation - Parts length:', parts.length);
+    if (parts.length > 0) {
+      console.log('🔍 PDF Generation - First part:', parts[0]);
+      console.log('🔍 PDF Generation - First part description:', parts[0].description);
+    }
+    
+        // Render parts with page break handling and professional styling
+        if (parts && parts.length > 0) {
+          parts.forEach((part: any, index: number) => {
+            // Check if we need a new page
+            if (currentY > 250) { // Leave space for footer
+              doc.addPage();
+              currentY = 20;
+              
+              // Re-add header on new page with styling
+              doc.setFillColor(50, 50, 50);
+              doc.rect(15, currentY - 5, pageWidth - 30, 12, 'F');
+              doc.setDrawColor(30, 30, 30);
+              doc.setLineWidth(0.5);
+              doc.rect(15, currentY - 5, pageWidth - 30, 12);
+              
+              doc.setFontSize(10);
+              doc.setFont('helvetica', 'bold');
+              doc.setTextColor(255, 255, 255);
+              doc.text('QTY', 20, currentY);
+              doc.text('Description', 60, currentY);
+              currentY += 10;
+            }
+            
+            // Alternating row colors - blue theme
+            if (index % 2 === 0) {
+              doc.setFillColor(248, 250, 252); // Very light blue for even rows
+            } else {
+              doc.setFillColor(240, 245, 250); // Light blue-gray for odd rows
+            }
+            doc.rect(15, currentY - 3, pageWidth - 30, 8, 'F');
+            
+            // Row border - blue
+            doc.setDrawColor(180, 200, 220);
+            doc.setLineWidth(0.2);
+            doc.rect(15, currentY - 3, pageWidth - 30, 8);
+            
+            const qty = part.qty || part.quantity || '1';
+            const description = part.description || 'Labour';
+            
+            console.log('🔍 PDF Part Debug:', {
+              part: part,
+              qty: qty,
+              description: description,
+              hasDescription: !!part.description,
+              partDescription: part.description,
+              partQty: part.qty
+            });
+            
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(9);
+            doc.setTextColor(30, 30, 30);
+            doc.text(String(qty), 20, currentY);
+            wrapText(description, 60, 60, currentY);
+            
+            currentY += 8;
+          });
+        } else {
+          // Default entries if no parts with blue styling
+          // Service Call row
+          doc.setFillColor(248, 250, 252); // Very light blue
+          doc.rect(15, currentY - 3, pageWidth - 30, 8, 'F');
+          doc.setDrawColor(180, 200, 220); // Blue border
+          doc.setLineWidth(0.2);
+          doc.rect(15, currentY - 3, pageWidth - 30, 8);
+          
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(9);
+          doc.setTextColor(30, 30, 30);
+          doc.text('1', 20, currentY);
+          doc.text('Labour', 60, currentY);
+          currentY += 8;
+          
+          // Labour row
+          doc.setFillColor(240, 245, 250); // Light blue-gray
+          doc.rect(15, currentY - 3, pageWidth - 30, 8, 'F');
+          doc.setDrawColor(180, 200, 220); // Blue border
+          doc.setLineWidth(0.2);
+          doc.rect(15, currentY - 3, pageWidth - 30, 8);
+          
+          doc.text('1', 20, currentY);
+          doc.text('Labour', 60, currentY);
+          currentY += 8;
+        }
+    
+    return doc;
+  };
+
+  const handleGenerateReport = async (job: any) => {
+    console.log('🔍 GENERATE REPORT CLICKED - Job:', job);
+    console.log('🔍 Job partsJson:', job.partsJson);
+    console.log('🔍 Job parts_json:', job.parts_json);
+    console.log('🔍 Job parts:', job.parts);
+    console.log('🔍 Job status:', job.status);
+    console.log('🔍 Job title:', job.title);
+    try {
+      // Generate service report number
+      const reportNumber = `SR-${Date.now()}`;
+      console.log('🔍 About to call generatePDF with job:', job);
+      console.log('🔍 Report number:', reportNumber);
+      
+      const doc = await generatePDF(job);
+      console.log('🔍 PDF generated successfully');
+      const fileName = `service-report-${reportNumber}.pdf`;
+      doc.save(fileName);
+      console.log('🔍 PDF saved as:', fileName);
+    } catch (error) {
+      console.error('Error generating PDF:', error);
+      alert('Failed to generate PDF report');
+    }
+  };
+
+  const handleViewReport = async (job: any) => {
+    try {
+      const doc = await generatePDF(job);
+      const pdfBlob = doc.output('blob');
+      const pdfUrl = URL.createObjectURL(pdfBlob);
+      window.open(pdfUrl, '_blank');
+    } catch (error) {
+      console.error('Error viewing PDF:', error);
+      alert('Failed to open PDF report');
+    }
+  };
+
   const filteredJobs = jobs.filter(job => {
+    // Debug specific job filtering
+    if (job.id === 'J5CVHLcCAWgqjGHJuhk0') {
+      console.log('Filtering debug job:', {
+        id: job.id,
+        status: job.status,
+        filter: filter,
+        serviceTypeFilter: serviceTypeFilter,
+        searchTerm: searchTerm
+      });
+    }
+    
     // Search filter - only apply if searchTerm is not empty
     const searchMatch = searchTerm === '' || 
       job.title?.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -565,19 +1210,21 @@ const Jobs: React.FC = () => {
       (job as any).client_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       (job as any).end_customer_name?.toLowerCase().includes(searchTerm.toLowerCase());
 
-    if (filter === 'reports_sent') {
-      // For reports sent to customer, show completed jobs that have been sent
-      const isReportSent = job.status === 'completed' && job.pdf_generated === true;
-      const serviceTypeMatch = serviceTypeFilter === '' || job.service_type === serviceTypeFilter;
-      const result = isReportSent && serviceTypeMatch && searchMatch;
-      if (job.status === 'completed') {
-        console.log(`Job ${job.id} (${job.title}): status=${job.status}, pdf_generated=${job.pdf_generated}, isReportSent=${isReportSent}, serviceTypeMatch=${serviceTypeMatch}, searchMatch=${searchMatch}, result=${result}`);
-      }
-      return result;
-    }
     const statusMatch = job.status === filter;
-    const serviceTypeMatch = serviceTypeFilter === '' || job.service_type === serviceTypeFilter;
+    const serviceTypeMatch = serviceTypeFilter === '' || 
+      (job as any).service_type === serviceTypeFilter || 
+      (job as any).serviceType === serviceTypeFilter;
     const result = statusMatch && serviceTypeMatch && searchMatch;
+    
+    if (job.id === 'J5CVHLcCAWgqjGHJuhk0') {
+      console.log('Debug job filter result:', {
+        statusMatch,
+        serviceTypeMatch,
+        searchMatch,
+        result
+      });
+    }
+    
     if (filter === 'completed' && job.status === 'completed') {
       console.log(`Job ${job.id} (${job.title}): status=${job.status}, filter=${filter}, statusMatch=${statusMatch}, serviceTypeMatch=${serviceTypeMatch}, searchMatch=${searchMatch}, result=${result}`);
     }
@@ -586,40 +1233,64 @@ const Jobs: React.FC = () => {
 
   console.log('Current filter:', filter);
   console.log('Total jobs:', jobs.length);
+  console.log('All jobs:', jobs);
   console.log('Filtered jobs count:', filteredJobs.length);
+  console.log('Filtered jobs:', filteredJobs);
   console.log('Service type filter:', serviceTypeFilter);
   console.log('Search term:', searchTerm);
 
   return (
-    <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <h1 className="text-3xl font-bold text-white">My Work Orders</h1>
-        <div className="flex space-x-3">
-          {selectedJobs.length > 0 && filter === 'completed' && (
-            <button
-              onClick={handleSendReportsToCustomer}
-              className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-md transition-colors"
-            >
-              Send report/s to customer ({selectedJobs.length})
-            </button>
-          )}
-          <button
-            onClick={() => setShowModal(true)}
-            className="bg-darker-blue hover:bg-blue-700 text-white px-4 py-2 rounded-md transition-colors"
-          >
-            Add New Job
-          </button>
+    <div key={refreshKey} className="min-h-screen bg-gray-50">
+      <div className="bg-white shadow-sm border-b border-gray-200">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex justify-between items-center py-6">
+            <div>
+              <h1 className="text-3xl font-bold text-gray-900">Work Orders</h1>
+              <p className="mt-1 text-sm text-gray-600">Manage and track all service requests</p>
+            </div>
+            <div className="flex space-x-3">
+              {selectedJobs.length > 0 && filter === 'completed' && (
+                <button
+                  onClick={handleSendReportsToCustomer}
+                  className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg text-white bg-emerald-600 hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500 transition-colors"
+                >
+                  <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 4.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                  </svg>
+                  Send Reports ({selectedJobs.length})
+                </button>
+              )}
+              <button
+                onClick={() => setShowModal(true)}
+                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
+              >
+                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                </svg>
+                Add New Job
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* Filter */}
-      <div className="flex flex-col space-y-4">
-        <div className="flex space-x-4 items-center">
-          <div className="flex space-x-4">
-            {['pending', 'in_progress', 'completed', 'reports_sent'].map((status) => (
+      {/* Filters and Search */}
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between space-y-4 lg:space-y-0 lg:space-x-6">
+            {/* Status Filters */}
+            <div className="flex space-x-2">
+              {['pending', 'in_progress', 'completed'].map((status) => (
               <button
                 key={status}
-                onClick={() => {
+                onClick={async () => {
+                  console.log('🔍 Tab clicked:', status, '- refreshing current screen first');
+                  
+                  // Step 1: Refresh current screen first
+                  // Jobs will update automatically via real-time listener
+                  console.log('🔍 Current screen refreshed, now switching to:', status);
+                  
+                  // Step 2: Move to selected tab
                   setFilter(status);
                   setServiceTypeFilter(''); // Reset service type filter when changing status
                   if (status !== 'completed') {
@@ -627,25 +1298,39 @@ const Jobs: React.FC = () => {
                     setIsSelectAll(false);
                   }
                 }}
-                className={`px-4 py-2 rounded-md transition-colors ${
+                className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
                   filter === status
-                    ? 'bg-darker-blue text-white'
-                    : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                    ? 'bg-blue-600 text-white shadow-sm'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                 }`}
               >
-                {status === 'reports_sent' ? 'Reports sent to customer' : status.charAt(0).toUpperCase() + status.slice(1).replace('_', ' ')}
+                {status.charAt(0).toUpperCase() + status.slice(1).replace('_', ' ')}
               </button>
             ))}
           </div>
           
-          {/* Service Type Filter - Only show for completed jobs and reports sent */}
-          {(filter === 'completed' || filter === 'reports_sent') && (
+          {/* Manual Refresh Button - Temporary for debugging */}
+          <button
+            onClick={async () => {
+              console.log('🔄 ===== MANUAL REFRESH BUTTON CLICKED =====');
+              console.log('🔄 Manual refresh button clicked...');
+              // Jobs will update automatically via real-time listener
+              console.log('🔄 Manual refresh completed');
+            }}
+            className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-md transition-colors flex items-center gap-2"
+            title="Refresh jobs data"
+          >
+            🔄 Manual Refresh
+          </button>
+          
+          {/* Service Type Filter - Only show for completed jobs */}
+          {filter === 'completed' && (
             <div className="flex items-center space-x-2">
               <label className="text-gray-300 text-sm">Service Type:</label>
               <select
                 value={serviceTypeFilter}
                 onChange={(e) => setServiceTypeFilter(e.target.value)}
-                className="bg-gray-700 text-white px-3 py-2 rounded-md text-sm"
+                className="bg-white text-gray-900 border border-gray-300 px-3 py-2 rounded-md text-sm"
               >
                 <option value="">All Service Types</option>
                 <option value="Vandalism">Vandalism</option>
@@ -663,7 +1348,7 @@ const Jobs: React.FC = () => {
               placeholder="Search jobs by title, description, equipment, site, order number..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full bg-gray-700 text-white px-4 py-2 pl-10 rounded-md border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="w-full bg-white text-gray-900 px-4 py-2 pl-10 rounded-md border border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
             <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
               <svg className="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -683,16 +1368,19 @@ const Jobs: React.FC = () => {
       </div>
 
       {/* Jobs List */}
-      <div className="bg-gray-800 rounded-lg shadow-lg">
-        <div className="px-6 py-4 border-b border-gray-700 flex justify-between items-center">
-          <h2 className="text-xl font-semibold text-white">
-            Jobs ({filteredJobs.length})
-            {searchTerm && (
-              <span className="text-sm text-gray-400 ml-2">
-                (filtered by "{searchTerm}")
-              </span>
-            )}
-          </h2>
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-8">
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200">
+          <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+            <div>
+              <h2 className="text-xl font-semibold text-gray-900">
+                Jobs ({filteredJobs.length})
+              </h2>
+              {searchTerm && (
+                <p className="text-sm text-gray-600 mt-1">
+                  Filtered by "{searchTerm}"
+                </p>
+              )}
+            </div>
           {filteredJobs.length > 0 && filter === 'completed' && (
             <div className="flex items-center space-x-2">
               <input
@@ -712,7 +1400,7 @@ const Jobs: React.FC = () => {
           {filteredJobs.length > 0 ? (
             <div className="space-y-4">
               {filteredJobs.map((job) => (
-                <div key={job.id} className="flex items-center justify-between p-4 bg-gray-700 rounded-lg">
+                <div key={job.id} className="flex items-center justify-between p-6 bg-white border border-gray-200 rounded-lg hover:shadow-md transition-shadow">
                   <div className="flex items-center space-x-3 flex-1">
                     {filter === 'completed' && (
                       <input
@@ -723,91 +1411,17 @@ const Jobs: React.FC = () => {
                       />
                     )}
                     <div className="flex-1">
-                    <h3 className="text-white font-medium flex items-center gap-2">
+                    <h3 className="text-gray-900 font-medium flex items-center gap-2">
                       <span className="px-2 py-0.5 rounded bg-gray-600 text-xs">Service Report Number {(job as any).snpid || job.id}</span>
                     </h3>
-                    <p className="text-gray-400 text-sm">{(job as any).site_address || (job as any).siteAddress || 'Site address not set'}</p>
-                    <p className="text-gray-400 text-sm">Equipment: {(job as any).equipment || '—'} • Fault: {(job as any).fault_reported || (job as any).faultReported || '—'}</p>
+                    <p className="text-gray-600 text-sm mt-1">Order Number: {(job as any).order_number || (job as any).orderNumber || '—'}</p>
+                    <p className="text-gray-600 text-sm">Service Type: {(job as any).service_type || (job as any).serviceType || '—'}</p>
+                    <p className="text-gray-600 text-sm">{(job as any).site_address || (job as any).siteAddress || 'Site address not set'}</p>
+                    <p className="text-gray-600 text-sm">Equipment: {(job as any).equipment || '—'} • Fault: {(job as any).fault_reported || (job as any).faultReported || '—'}</p>
                     {job.status !== 'completed' && (
-                      <p className="text-gray-400 text-sm mt-2">Requested: {(job as any).requested_date || (job as any).requestedDate || '—'} • Due: {(job as any).due_date || (job as any).dueDate || '—'}</p>
+                      <p className="text-gray-600 text-sm mt-2">Requested: {(job as any).requested_date || (job as any).requestedDate || '—'} • Due: {(job as any).due_date || (job as any).dueDate || '—'}</p>
                     )}
                     
-                    {/* Completion Details for Completed Jobs */}
-                    {job.status === 'completed' && (
-                      <div className="mt-3 p-3 bg-green-900 bg-opacity-30 border border-green-500 rounded-lg">
-                        <div className="flex items-center mb-2">
-                          <span className="text-green-400 text-sm font-medium">✅ Completion Details</span>
-                          <span className="ml-2 text-xs text-gray-400">
-                            Completed: {(job as any).completed_date || '—'}
-                          </span>
-                        </div>
-                        
-                        {/* Action Taken */}
-                        {(job as any).action_taken && (
-                          <div className="mb-2">
-                            <div className="text-xs text-gray-400 font-medium">Action Taken:</div>
-                            <div className="text-sm text-white bg-gray-800 p-2 rounded mt-1">
-                              {(job as any).action_taken}
-                            </div>
-                          </div>
-                        )}
-                        
-                        {/* Parts/Labour */}
-                        {(job as any).parts_json && (
-                          <div className="mb-2">
-                            <div className="text-xs text-gray-400 font-medium">Parts/Labour Used:</div>
-                            <div className="text-sm text-white bg-gray-800 p-2 rounded mt-1">
-                              {JSON.parse((job as any).parts_json).map((part: any, idx: number) => (
-                                <div key={idx} className="text-xs">
-                                  • {part.description} (Qty: {part.qty})
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                        
-                        {/* Service Report */}
-                        {(job as any).service_report && (
-                          <div className="mb-2">
-                            <div className="text-xs text-gray-400 font-medium">Service Report:</div>
-                            <div className="text-sm text-white bg-gray-800 p-2 rounded mt-1">
-                              {(job as any).service_report}
-                            </div>
-                          </div>
-                        )}
-                        
-                        {/* Photos */}
-                        {(job as any).photos && (job as any).photos.length > 0 && (
-                          <div className="mb-2">
-                            <div className="text-xs text-gray-400 font-medium">Inspector Photos ({(job as any).photos.length}):</div>
-                            <div className="grid grid-cols-2 gap-2 mt-2">
-                              {(job as any).photos.map((photo: any, idx: number) => (
-                                <div key={idx} className="relative">
-                                  <img
-                                    src={photo.url}
-                                    alt={photo.caption || 'Job photo'}
-                                    className="w-full h-20 object-cover rounded border border-gray-600"
-                                  />
-                                  {photo.caption && (
-                                    <p className="text-xs text-gray-400 mt-1 truncate">{photo.caption}</p>
-                                  )}
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                        
-                        {/* Technician Notes */}
-                        {(job as any).technician_notes && (
-                          <div className="mb-2">
-                            <div className="text-xs text-gray-400 font-medium">Technician Notes:</div>
-                            <div className="text-sm text-white bg-gray-800 p-2 rounded mt-1">
-                              {(job as any).technician_notes}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
                     </div>
                   </div>
                   <div className="flex items-center space-x-2">
@@ -825,59 +1439,52 @@ const Jobs: React.FC = () => {
                       <div className="flex gap-2">
                         <button
                           onClick={() => handleEdit(job)}
-                          className={`px-3 py-1 rounded-md text-sm transition-colors ${
+                          className={`inline-flex items-center px-3 py-1.5 text-sm font-medium rounded-lg transition-colors ${
                             job.status === 'completed' 
-                              ? 'bg-orange-600 hover:bg-orange-700 text-white' 
-                              : 'bg-blue-600 hover:bg-blue-700 text-white'
+                              ? 'bg-orange-100 text-orange-700 hover:bg-orange-200 border border-orange-200' 
+                              : 'bg-blue-100 text-blue-700 hover:bg-blue-200 border border-blue-200'
                           }`}
                           title={job.status === 'completed' ? 'Amend completed job' : 'Edit job'}
                         >
+                          <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                          </svg>
                           {job.status === 'completed' ? 'Amend' : 'Edit'}
                         </button>
                         <button
                           onClick={() => handleDelete(job.id)}
-                          className="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded-md text-sm transition-colors"
+                          className="inline-flex items-center px-3 py-1.5 text-sm font-medium rounded-lg bg-red-100 text-red-700 hover:bg-red-200 border border-red-200 transition-colors"
                         >
+                          <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                          </svg>
                           Delete
                         </button>
                       </div>
                       
-                      {/* Second line: Generate PDF (only for completed jobs) */}
+                      {/* Report buttons for completed jobs */}
                       {job.status === 'completed' && (
-                        <button
-                          onClick={() => handleGeneratePDF(job.id)}
-                          className={`px-3 py-1 rounded-md text-sm transition-colors ${
-                            job.pdf_generated 
-                              ? 'bg-gray-500 hover:bg-gray-600 text-white' 
-                              : 'bg-green-600 hover:bg-green-700 text-white'
-                          }`}
-                          title={job.pdf_generated ? 'PDF Report Already Generated' : 'Generate PDF Report'}
-                        >
-                          📄 {job.pdf_generated ? 'Generated' : 'Generate Report'}
-                        </button>
+                        <div className="flex gap-2 mt-2">
+                          <button
+                            onClick={() => {
+                              console.log('🔍 SIMPLE BUTTON CLICKED');
+                              alert('SIMPLE BUTTON CLICKED!');
+                            }}
+                            className="bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded-md text-sm transition-colors"
+                            title="Generate and download PDF report"
+                          >
+                            📄 Generate
+                          </button>
+                          <button
+                            onClick={() => handleViewReport(job)}
+                            className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded-md text-sm transition-colors"
+                            title="View PDF report in new tab"
+                          >
+                            👁️ View
+                          </button>
+                        </div>
                       )}
                       
-                      {/* Third line: View PDF (only for completed jobs) */}
-                      {job.status === 'completed' && (
-                        <button
-                          onClick={() => handleViewPDF(job.id)}
-                          className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded-md text-sm transition-colors"
-                          title="View PDF Report"
-                        >
-                          👁️ View PDF
-                        </button>
-                      )}
-                      
-                      {/* Fourth line: Download PDF (only for completed jobs) */}
-                      {job.status === 'completed' && (
-                        <button
-                          onClick={() => handleDownloadPDF(job.id)}
-                          className="bg-purple-600 hover:bg-purple-700 text-white px-3 py-1 rounded-md text-sm transition-colors"
-                          title="Download PDF Report"
-                        >
-                          📥 Download PDF
-                        </button>
-                      )}
                     </div>
                   </div>
                 </div>
@@ -892,9 +1499,9 @@ const Jobs: React.FC = () => {
       {/* Modal */}
       {showModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-gray-800 rounded-lg p-6 w-full max-w-4xl max-h-[90vh] overflow-y-auto">
+          <div className="bg-white rounded-lg p-6 w-full max-w-4xl max-h-[90vh] overflow-y-auto shadow-2xl">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xl font-semibold text-white">
+              <h2 className="text-xl font-semibold text-gray-900">
                 {editingJob ? (
                   editingJob.status === 'completed' ? 'Amend Completed Job' : 'Edit Job'
                 ) : 'Add New Job'}
@@ -932,21 +1539,21 @@ const Jobs: React.FC = () => {
               {/* Admin assignment fields reflecting report header */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-gray-300 text-sm font-medium mb-2">Requested Date</label>
+                  <label className="block text-gray-700 text-sm font-medium mb-2">Requested Date</label>
                   <DatePicker
                     selected={formData.requestedDate ? new Date(formData.requestedDate) : null}
                     onChange={(date: Date | null) => setFormData({ ...formData, requestedDate: date ? date.toISOString().slice(0,10) : '' })}
-                    className="w-full bg-gray-700 text-white px-3 py-2 rounded-md"
+                    className="w-full bg-white text-gray-900 border-2 border-gray-400 px-3 py-2 rounded-md focus:border-blue-500"
                     popperClassName="date-popper-lg"
                     calendarClassName="!text-base !p-2"
                   />
                 </div>
                 <div>
-                  <label className="block text-gray-300 text-sm font-medium mb-2">Must be completed by</label>
+                  <label className="block text-gray-700 text-sm font-medium mb-2">Must be completed by</label>
                   <DatePicker
                     selected={formData.dueDate ? new Date(formData.dueDate) : null}
                     onChange={(date: Date | null) => setFormData({ ...formData, dueDate: date ? date.toISOString().slice(0,10) : '' })}
-                    className="w-full bg-gray-700 text-white px-3 py-2 rounded-md"
+                    className="w-full bg-white text-gray-900 border-2 border-gray-400 px-3 py-2 rounded-md focus:border-blue-500"
                     popperClassName="date-popper-lg"
                     calendarClassName="!text-base !p-2"
                   />
@@ -955,7 +1562,7 @@ const Jobs: React.FC = () => {
               <div className="grid grid-cols-1 gap-3">
                 {clients.length > 1 && (
                 <div>
-                  <label className="block text-gray-300 text-sm font-medium mb-2">Client</label>
+                  <label className="block text-gray-700 text-sm font-medium mb-2">Client</label>
                   <select value={formData.clientId} onChange={async (e) => {
                     const clientId = e.target.value;
                     const selected = clients.find((c: any) => c.id === clientId);
@@ -973,14 +1580,14 @@ const Jobs: React.FC = () => {
                       setEndCustomers(ecSnap.docs.map(d => ({ id: d.id, ...(d.data() as any) })) as any);
                       setSites([]);
                     }
-                  }} className="w-full bg-gray-700 text-white px-3 py-2 rounded-md" required>
+                  }} className="w-full bg-white text-gray-900 border-2 border-gray-400 px-3 py-2 rounded-md focus:border-blue-500" required>
                     <option value="">Select Client</option>
                     {clients.map(c => (<option key={c.id} value={c.id}>{c.name}</option>))}
                   </select>
                 </div>
                 )}
                 <div>
-                  <label className="block text-gray-300 text-sm font-medium mb-2">End-Customer</label>
+                  <label className="block text-gray-700 text-sm font-medium mb-2">End-Customer</label>
                   <select value={formData.endCustomerId} onChange={async (e) => {
                     const endCustomerId = e.target.value; setFormData({ ...formData, endCustomerId, siteId: '' });
                     if (formData.clientId && endCustomerId) {
@@ -989,13 +1596,13 @@ const Jobs: React.FC = () => {
                       console.log('Loaded sites data:', sitesData);
                       setSites(sitesData);
                     }
-                  }} className="w-full bg-gray-700 text-white px-3 py-2 rounded-md" required>
+                  }} className="w-full bg-white text-gray-900 border-2 border-gray-400 px-3 py-2 rounded-md focus:border-blue-500" required>
                     <option value="">Select End-Customer</option>
                     {endCustomers.map(c => (<option key={c.id} value={c.id}>{c.name}</option>))}
                   </select>
                 </div>
                 <div>
-                  <label className="block text-gray-300 text-sm font-medium mb-2">Site</label>
+                  <label className="block text-gray-700 text-sm font-medium mb-2">Site</label>
                   <select value={formData.siteId} onChange={(e) => { 
                     const id=e.target.value; 
                     console.log('Site selection changed to:', id);
@@ -1027,44 +1634,52 @@ const Jobs: React.FC = () => {
                       sitePhone: formData.sitePhone,
                       equipment: equipmentList
                     }); 
-                  }} className="w-full bg-gray-700 text-white px-3 py-2 rounded-md" required>
+                  }} className="w-full bg-white text-gray-900 border-2 border-gray-400 px-3 py-2 rounded-md focus:border-blue-500" required>
                     <option value="">Select Site</option>
                     {sites.length > 0 ? sites.map(s => (<option key={s.id} value={s.id}>{[s.address, s.suburb, s.state, s.postcode].filter(Boolean).join(', ')}</option>)) : <option disabled>Loading sites...</option>}
                   </select>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-gray-300 text-sm font-medium mb-2">Site Contact</label>
-                    <input value={formData.siteContact} onChange={(e)=>setFormData({...formData, siteContact: e.target.value})} className="w-full bg-gray-700 text-white px-3 py-2 rounded-md" />
+                    <label className="block text-gray-700 text-sm font-medium mb-2">Site Contact</label>
+                    <input value={formData.siteContact} onChange={(e)=>setFormData({...formData, siteContact: e.target.value})} className="w-full bg-white text-gray-900 border-2 border-gray-400 px-3 py-2 rounded-md focus:border-blue-500" />
                   </div>
                   <div>
-                    <label className="block text-gray-300 text-sm font-medium mb-2">Phone Number</label>
-                    <input value={formData.sitePhone} onChange={(e)=>setFormData({...formData, sitePhone: e.target.value})} className="w-full bg-gray-700 text-white px-3 py-2 rounded-md" />
+                    <label className="block text-gray-700 text-sm font-medium mb-2">Phone Number</label>
+                    <input value={formData.sitePhone} onChange={(e)=>setFormData({...formData, sitePhone: e.target.value})} className="w-full bg-white text-gray-900 border-2 border-gray-400 px-3 py-2 rounded-md focus:border-blue-500" />
                   </div>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-gray-300 text-sm font-medium mb-2">Order Number</label>
-                    <input value={formData.orderNumber} onChange={(e)=>setFormData({...formData, orderNumber: e.target.value})} className="w-full bg-gray-700 text-white px-3 py-2 rounded-md" />
+                    <label className="block text-gray-700 text-sm font-medium mb-2">Order Number</label>
+                    <input value={formData.orderNumber} onChange={(e)=>setFormData({...formData, orderNumber: e.target.value})} className="w-full bg-white text-gray-900 border-2 border-gray-400 px-3 py-2 rounded-md focus:border-blue-500" />
                   </div>
                   <div>
-                    <label className="block text-gray-300 text-sm font-medium mb-2">Equipment</label>
-                    <input value={formData.equipment} onChange={(e)=>setFormData({...formData, equipment: e.target.value})} className="w-full bg-gray-700 text-white px-3 py-2 rounded-md" />
+                    <label className="block text-gray-700 text-sm font-medium mb-2">Equipment</label>
+                    <select value={formData.equipment} onChange={(e)=>setFormData({...formData, equipment: e.target.value})} className="w-full bg-white text-gray-900 border-2 border-gray-400 px-3 py-2 rounded-md focus:border-blue-500">
+                      <option value="">Select Equipment</option>
+                      <option value="Bollards">Bollards</option>
+                      <option value="Roller Doors">Roller Doors</option>
+                      <option value="Boom Gates">Boom Gates</option>
+                      <option value="Road Blockers">Road Blockers</option>
+                      <option value="Slide Gates">Slide Gates</option>
+                      <option value="Swing Gates">Swing Gates</option>
+                    </select>
                   </div>
                 </div>
                 <div>
-                  <label className="block text-gray-300 text-sm font-medium mb-2">Fault Reported</label>
-                  <input value={formData.faultReported} onChange={(e)=>setFormData({...formData, faultReported: e.target.value})} className="w-full bg-gray-700 text-white px-3 py-2 rounded-md" />
+                  <label className="block text-gray-700 text-sm font-medium mb-2">Fault Reported</label>
+                  <input value={formData.faultReported} onChange={(e)=>setFormData({...formData, faultReported: e.target.value})} className="w-full bg-white text-gray-900 border-2 border-gray-400 px-3 py-2 rounded-md focus:border-blue-500" />
                 </div>
               </div>
 
               {technicians.length > 1 && (
               <div>
-                <label className="block text-gray-300 text-sm font-medium mb-2">Technician</label>
+                <label className="block text-gray-700 text-sm font-medium mb-2">Technician</label>
                 <select
                   value={formData.technician_id}
                   onChange={(e) => setFormData({ ...formData, technician_id: e.target.value })}
-                  className="w-full bg-gray-700 text-white px-3 py-2 rounded-md"
+                  className="w-full bg-white text-gray-900 border-2 border-gray-400 px-3 py-2 rounded-md focus:border-blue-500"
                 >
                   <option value="">Select Technician</option>
                   {technicians.map((technician) => (
@@ -1078,38 +1693,40 @@ const Jobs: React.FC = () => {
 
               {/* Title/Description hidden; mapped from Equipment/Fault Reported */}
 
-              {/* Inspector/Technician Completion Fields - Only show when editing completed jobs */}
+
+              {/* Inspector/Technician Completion Fields - Always show for completed jobs */}
               {editingJob && editingJob.status === 'completed' && (
                 <div className="border-t border-gray-600 pt-4 mt-4">
-                  <h3 className="text-lg font-semibold text-white mb-4">Inspector/Technician Completion Data</h3>
+                  <h3 className="text-lg font-semibold text-gray-900 mb-4">Inspector/Technician Completion Data</h3>
                   
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <div>
-                      <label className="block text-gray-300 text-sm font-medium mb-2">Arrival Time</label>
+                      <label className="block text-gray-700 text-sm font-medium mb-2">Arrival Time</label>
                       <input
                         type="time"
                         value={formData.arrivalTime}
                         onChange={(e) => setFormData({ ...formData, arrivalTime: e.target.value })}
-                        className="w-full bg-gray-700 text-white px-3 py-2 rounded-md"
+                        className="w-full bg-white text-gray-900 border-2 border-gray-400 px-3 py-2 rounded-md focus:border-blue-500"
                       />
                     </div>
                     <div>
-                      <label className="block text-gray-300 text-sm font-medium mb-2">Departure Time</label>
+                      <label className="block text-gray-700 text-sm font-medium mb-2">Departure Time</label>
                       <input
                         type="time"
                         value={formData.departureTime}
                         onChange={(e) => setFormData({ ...formData, departureTime: e.target.value })}
-                        className="w-full bg-gray-700 text-white px-3 py-2 rounded-md"
+                        className="w-full bg-white text-gray-900 border-2 border-gray-400 px-3 py-2 rounded-md focus:border-blue-500"
                       />
                     </div>
                   </div>
                   
+                  
                   <div>
-                    <label className="block text-gray-300 text-sm font-medium mb-2">Service Type</label>
+                    <label className="block text-gray-700 text-sm font-medium mb-2">Service Type</label>
                     <select
                       value={formData.serviceType}
                       onChange={(e) => setFormData({ ...formData, serviceType: e.target.value })}
-                      className="w-full bg-gray-700 text-white px-3 py-2 rounded-md"
+                      className="w-full bg-white text-gray-900 border-2 border-gray-400 px-3 py-2 rounded-md focus:border-blue-500"
                     >
                       <option value="">Select Service Type</option>
                       <option value="Vandalism">Vandalism</option>
@@ -1118,73 +1735,97 @@ const Jobs: React.FC = () => {
                   </div>
                   
                   <div>
-                    <label className="block text-gray-300 text-sm font-medium mb-2">Action Taken</label>
+                    <label className="block text-gray-700 text-sm font-medium mb-2">Action Taken</label>
                     <textarea
                       value={formData.actionTaken}
                       onChange={(e) => setFormData({ ...formData, actionTaken: e.target.value })}
-                      className="w-full bg-gray-700 text-white px-3 py-2 rounded-md"
+                      onInput={(e) => {
+                        const el = e.currentTarget as HTMLTextAreaElement;
+                        el.style.height = 'auto';
+                        el.style.height = `${el.scrollHeight}px`;
+                      }}
+                      className="w-full bg-white text-gray-900 border-2 border-gray-400 px-3 py-2 rounded-md focus:border-blue-500"
                       rows={3}
+                      style={{ overflow: 'hidden' }}
                       placeholder="Describe the action taken to resolve the issue..."
                     />
                   </div>
                   
                   <div>
-                    <label className="block text-gray-300 text-sm font-medium mb-2">Parts/Labour Used</label>
+                    <label className="block text-gray-700 text-sm font-medium mb-2">Parts/Labour Used</label>
                     
-                    {/* Parts Search */}
-                    <div className="relative mb-3">
+                    {/* Parts Search with Database */}
+                    <div className="relative mb-3 parts-search-container">
                       <input
                         type="text"
                         value={partsSearch}
-                        onChange={(e) => {
-                          setPartsSearch(e.target.value);
-                          setShowPartsDropdown(true);
-                        }}
+                        onChange={(e) => handlePartsSearch(e.target.value)}
                         onFocus={() => setShowPartsDropdown(true)}
-                        className="w-full bg-gray-700 text-white px-3 py-2 rounded-md"
-                        placeholder="Search parts..."
+                        placeholder="Search parts by number or description..."
+                        className="w-full bg-white text-gray-900 border-2 border-gray-400 px-3 py-2 rounded-md focus:border-blue-500"
                       />
                       
                       {/* Parts Dropdown */}
-                      {showPartsDropdown && filteredParts.length > 0 && (
+                      {showPartsDropdown && (
                         <div className="absolute z-10 w-full bg-gray-700 border border-gray-600 rounded-md mt-1 max-h-48 overflow-y-auto">
-                          {filteredParts.map((part) => (
-                            <div
-                              key={part.id}
-                              onClick={() => {
-                                setParts([...parts, { description: part.description, qty: 1 }]);
-                                setPartsSearch('');
-                                setShowPartsDropdown(false);
-                              }}
-                              className="px-3 py-2 hover:bg-gray-600 cursor-pointer text-white text-sm"
-                            >
-                              <div className="font-medium">{part.description}</div>
-                              <div className="text-xs text-gray-400">
-                                {part.partNumber} • {part.unitType === 'qty' ? 'Quantity' : 'Hours'}
-                              </div>
+                          <div className="px-3 py-2 text-gray-400 text-sm">
+                            Debug: showPartsDropdown={showPartsDropdown.toString()}, filteredParts={filteredParts.length}, availableParts={availableParts.length}
+                          </div>
+                          {filteredParts.length > 0 ? (
+                            <>
+                              {filteredParts.slice(0, 10).map((part) => (
+                                <div
+                                  key={part.id}
+                                  onClick={() => addPartToList(part)}
+                                  className="px-3 py-2 hover:bg-gray-600 cursor-pointer border-b border-gray-600 last:border-b-0"
+                                >
+                                  <div className="text-white font-medium">{part.partNumber}</div>
+                                  <div className="text-gray-300 text-sm">{part.description}</div>
+                                  <div className="text-gray-400 text-xs">
+                                    {part.unitType === 'qty' ? 'Quantity' : 'Hours'}
+                                  </div>
+                                </div>
+                              ))}
+                              {filteredParts.length > 10 && (
+                                <div className="px-3 py-2 text-gray-400 text-sm text-center">
+                                  ... and {filteredParts.length - 10} more
+                                </div>
+                              )}
+                            </>
+                          ) : (
+                            <div className="px-3 py-2 text-gray-400 text-sm">
+                              No parts found. Available parts: {availableParts.length}
                             </div>
-                          ))}
+                          )}
                         </div>
                       )}
                     </div>
 
-                    {/* Parts List */}
+                    {/* Parts List - Simplified like Technician Portal */}
                     <div className="space-y-2">
                       {parts.map((p, idx) => (
                         <div key={idx} className="flex gap-1 items-center">
-                          <input 
-                            value={p.description} 
-                            onChange={(e)=>{
-                              const v=[...parts]; v[idx].description = e.target.value; setParts(v);
-                            }} 
-                            className="flex-1 bg-gray-700 text-white px-2 py-2 rounded-md text-sm" 
-                            placeholder="Description or Part #" 
-                          />
+                          <div className="flex-1">
+                            <input 
+                              value={p.description} 
+                              onChange={(e)=>{
+                                const v=[...parts]; v[idx].description = e.target.value; setParts(v);
+                              }}
+                              className="w-full bg-white text-gray-900 border border-gray-300 px-2 py-2 rounded-md text-sm" 
+                              placeholder="Part description..." 
+                            />
+                          </div>
                           
                           {/* Quantity Controls */}
                           <div className="flex items-center bg-gray-700 rounded-md">
                             <button 
-                              onClick={() => updatePartQuantity(idx, p.qty - 1)}
+                              type="button"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                console.log('🔍 Minus button clicked for part', idx, 'current qty:', p.qty);
+                                updatePartQuantity(idx, p.qty - 1);
+                              }}
                               className="px-2 py-2 text-white hover:bg-gray-600 rounded-l-md text-sm"
                               disabled={p.qty <= 0}
                             >
@@ -1198,7 +1839,13 @@ const Jobs: React.FC = () => {
                               min="0"
                             />
                             <button
-                              onClick={() => updatePartQuantity(idx, p.qty + 1)}
+                              type="button"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                console.log('🔍 Plus button clicked for part', idx, 'current qty:', p.qty);
+                                updatePartQuantity(idx, p.qty + 1);
+                              }}
                               className="px-2 py-2 text-white hover:bg-gray-600 rounded-r-md text-sm"
                             >
                               +
@@ -1206,6 +1853,7 @@ const Jobs: React.FC = () => {
                           </div>
                           
                           <button 
+                            type="button"
                             onClick={()=>{ const v=[...parts]; v.splice(idx,1); setParts(v); }} 
                             className="bg-red-600 hover:bg-red-700 text-white px-2 py-2 rounded-md text-sm flex-shrink-0"
                           >
@@ -1238,6 +1886,48 @@ const Jobs: React.FC = () => {
                 </div>
               )}
 
+              {/* Photos Section - Show for completed jobs */}
+              {editingJob && editingJob.status === 'completed' && editingJob.photos && editingJob.photos.length > 0 && (
+                <div className="border-t border-gray-600 pt-4">
+                  <h3 className="text-lg font-semibold text-white mb-3">📸 Job Photos</h3>
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                    {editingJob.photos.map((photo, index) => (
+                      <div key={index} className="relative group">
+                        <img
+                          src={photo.url}
+                          alt={photo.caption || `Job photo ${index + 1}`}
+                          className="w-full h-32 object-cover rounded-lg border border-gray-600"
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).src = '/placeholder-image.png';
+                          }}
+                        />
+                        {photo.caption && (
+                          <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-70 text-white text-xs p-2 rounded-b-lg">
+                            {photo.caption}
+                          </div>
+                        )}
+                        {photo.category && (
+                          <div className="absolute top-2 right-2 bg-blue-600 text-white text-xs px-2 py-1 rounded">
+                            {photo.category}
+                          </div>
+                        )}
+                        <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-30 transition-all duration-200 rounded-lg flex items-center justify-center opacity-0 group-hover:opacity-100">
+                          <button
+                            onClick={() => window.open(photo.url, '_blank')}
+                            className="bg-white bg-opacity-20 hover:bg-opacity-30 text-white px-3 py-1 rounded text-sm"
+                          >
+                            View Full Size
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-gray-400 text-sm mt-2">
+                    {editingJob.photos.length} photo{editingJob.photos.length !== 1 ? 's' : ''} uploaded for this job
+                  </p>
+                </div>
+              )}
+
               <div>
                 {/* Priority/Scheduled removed per spec */}
               </div>
@@ -1245,6 +1935,12 @@ const Jobs: React.FC = () => {
               <div className="flex space-x-4">
                 <button
                   type="submit"
+                  onClick={(e) => {
+                    console.log('🔍 Update Job button clicked!');
+                    console.log('🔍 Button click - parts state:', parts);
+                    console.log('🔍 Button click - parts length:', parts.length);
+                    // Let the form submission handle the rest
+                  }}
                   className="flex-1 bg-darker-blue hover:bg-blue-700 text-white px-4 py-2 rounded-md transition-colors"
                 >
                   {editingJob ? 'Update' : 'Create'} Job
@@ -1275,7 +1971,8 @@ const Jobs: React.FC = () => {
                       serviceType: '',
                       partsJson: '',
                       arrivalTime: '',
-                      departureTime: ''
+                      departureTime: '',
+                      technician_name: ''
                     });
                   }}
                   className="flex-1 bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded-md transition-colors"
@@ -1288,37 +1985,8 @@ const Jobs: React.FC = () => {
         </div>
       )}
 
-      {/* PDF Viewer Modal */}
-      {showPdfViewer && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-gray-800 rounded-lg p-6 w-full max-w-6xl h-5/6">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-xl font-semibold text-white">PDF Report Viewer</h2>
-              <button
-                onClick={() => {
-                  setShowPdfViewer(false);
-                  if (selectedPdfUrl) {
-                    window.URL.revokeObjectURL(selectedPdfUrl);
-                    setSelectedPdfUrl('');
-                  }
-                }}
-                className="bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded-md"
-              >
-                Close
-              </button>
-            </div>
-            <div className="h-full">
-              {selectedPdfUrl && (
-                <iframe
-                  src={selectedPdfUrl}
-                  className="w-full h-full border-0 rounded-md"
-                  title="PDF Report"
-                />
-              )}
-            </div>
-          </div>
         </div>
-      )}
+      </div>
     </div>
   );
 };

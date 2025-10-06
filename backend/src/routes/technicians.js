@@ -1,78 +1,97 @@
 const express = require('express');
-const { db } = require('../database');
+const { db } = require('../firebase');
+const { authenticateToken, requireAdmin } = require('../middleware/auth');
 const router = express.Router();
 
 // Get all technicians
-router.get('/', (req, res) => {
-  const query = 'SELECT * FROM technicians ORDER BY name';
-  
-  db.all(query, [], (err, rows) => {
-    if (err) {
-      res.status(500).json({ error: err.message });
-      return;
-    }
-    res.json(rows);
-  });
+router.get('/', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const techniciansSnapshot = await db.collection('technicians').orderBy('name').get();
+    const technicians = [];
+    
+    techniciansSnapshot.forEach(doc => {
+      technicians.push({
+        id: doc.id,
+        ...doc.data()
+      });
+    });
+    
+    res.json(technicians);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Get technician by ID
-router.get('/:id', (req, res) => {
-  const query = 'SELECT * FROM technicians WHERE id = ?';
-  
-  db.get(query, [req.params.id], (err, row) => {
-    if (err) {
-      res.status(500).json({ error: err.message });
-      return;
-    }
-    if (!row) {
+router.get('/:id', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const technicianDoc = await db.collection('technicians').doc(req.params.id).get();
+    
+    if (!technicianDoc.exists) {
       res.status(404).json({ error: 'Technician not found' });
       return;
     }
-    res.json(row);
-  });
+    
+    res.json({
+      id: technicianDoc.id,
+      ...technicianDoc.data()
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Create new technician
-router.post('/', (req, res) => {
-  const { name, email, phone, specializations } = req.body;
-  
-  const query = 'INSERT INTO technicians (name, email, phone, specializations) VALUES (?, ?, ?, ?)';
-  
-  db.run(query, [name, email, phone, specializations], function(err) {
-    if (err) {
-      res.status(500).json({ error: err.message });
-      return;
-    }
-    res.json({ id: this.lastID, message: 'Technician created successfully' });
-  });
+router.post('/', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { name, email, phone, specializations } = req.body;
+    
+    const technicianData = {
+      name,
+      email,
+      phone: phone || null,
+      specializations: specializations || null,
+      created_at: new Date()
+    };
+    
+    const docRef = await db.collection('technicians').add(technicianData);
+    
+    res.json({ id: docRef.id, message: 'Technician created successfully' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Update technician
-router.put('/:id', (req, res) => {
-  const { name, email, phone, specializations } = req.body;
-  
-  const query = 'UPDATE technicians SET name = ?, email = ?, phone = ?, specializations = ? WHERE id = ?';
-  
-  db.run(query, [name, email, phone, specializations, req.params.id], function(err) {
-    if (err) {
-      res.status(500).json({ error: err.message });
-      return;
-    }
+router.put('/:id', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { name, email, phone, specializations } = req.body;
+    
+    const technicianData = {
+      name,
+      email,
+      phone: phone || null,
+      specializations: specializations || null,
+      updated_at: new Date()
+    };
+    
+    await db.collection('technicians').doc(req.params.id).update(technicianData);
+    
     res.json({ message: 'Technician updated successfully' });
-  });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Delete technician
-router.delete('/:id', (req, res) => {
-  const query = 'DELETE FROM technicians WHERE id = ?';
-  
-  db.run(query, [req.params.id], function(err) {
-    if (err) {
-      res.status(500).json({ error: err.message });
-      return;
-    }
+router.delete('/:id', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    await db.collection('technicians').doc(req.params.id).delete();
+    
     res.json({ message: 'Technician deleted successfully' });
-  });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 module.exports = router;

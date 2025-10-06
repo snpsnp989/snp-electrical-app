@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { 
   getClients, createClient, updateClient, deleteClient,
-  getEndCustomers, createEndCustomer, getSites, createSite, updateSite
+  getEndCustomers, createEndCustomer, getSites, createSite, updateSite, deleteSite
 } from '../services/firebaseService';
+import { getApiUrl } from '../config/api';
+import * as XLSX from 'xlsx';
 
 interface Client { id: string; name: string; contact_name?: string; email?: string; phone?: string; address?: string; suburb?: string; state?: string; postcode?: string; country?: string; is_active?: boolean; customers?: EndCustomer[]; }
 interface EndCustomer { id: string; name: string; contact_name?: string; email?: string; phone?: string; address?: string; suburb?: string; state?: string; postcode?: string; country?: string; is_active?: boolean; sites?: Site[]; }
@@ -27,6 +29,7 @@ const Clients: React.FC = () => {
   const [showAddClient, setShowAddClient] = useState(false);
   const [showAddCustomerFor, setShowAddCustomerFor] = useState<string | null>(null);
   const [showAddSiteFor, setShowAddSiteFor] = useState<{ clientId: string; customerId: string } | null>(null);
+  const [showImportSites, setShowImportSites] = useState(false);
 
   useEffect(() => { 
     refresh(); 
@@ -35,10 +38,7 @@ const Clients: React.FC = () => {
 
   const fetchEquipment = async () => {
     try {
-      const apiUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
-        ? 'http://localhost:5001' 
-        : 'http://192.168.0.223:5001';
-      
+      const apiUrl = getApiUrl();
       const response = await fetch(`${apiUrl}/api/equipment`);
       if (response.ok) {
         const data = await response.json();
@@ -63,6 +63,141 @@ const Clients: React.FC = () => {
     }));
     setClients(enriched as any);
     setLoading(false);
+  };
+
+  const importSites = async (file: File) => {
+    let importedCount = 0;
+    let skippedCount = 0;
+    
+    try {
+      let data: any[] = [];
+      
+      if (file.name.toLowerCase().endsWith('.xlsx')) {
+        // Handle XLSX files
+        const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+        const sheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[sheetName];
+        data = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+      } else {
+        // Handle IIF/TXT files
+        const text = await file.text();
+        const lines = text.split(/\r?\n/).filter(Boolean);
+        data = lines.map(line => line.split('\t'));
+      }
+      
+      if (data.length < 2) {
+        alert('File must contain at least a header row and one data row');
+        return;
+      }
+      
+      const [header, ...rows] = data;
+      
+      // Find column indices with flexible matching
+      const getColumnIndex = (possibleNames: string[]) => {
+        for (const name of possibleNames) {
+          const idx = header.findIndex((col: string) => 
+            col?.toString().toLowerCase().trim().includes(name.toLowerCase()) ||
+            name.toLowerCase().includes(col?.toString().toLowerCase().trim())
+          );
+          if (idx !== -1) return idx;
+        }
+        return -1;
+      };
+      
+      const clientNameIdx = getColumnIndex(['Client Name', 'Client', 'Company', 'Customer', 'Client Company']);
+      const endCustomerNameIdx = getColumnIndex(['End Customer Name', 'End Customer', 'Customer Name', 'Site Customer', 'End Client']);
+      const siteNameIdx = getColumnIndex(['Site Name', 'Site', 'Location', 'Property', 'Building', 'Facility']);
+      const addressIdx = getColumnIndex(['Address', 'Street Address', 'Location Address', 'Site Address']);
+      const suburbIdx = getColumnIndex(['Suburb', 'City', 'Town', 'Area']);
+      const stateIdx = getColumnIndex(['State', 'Province', 'Region']);
+      const postcodeIdx = getColumnIndex(['Postcode', 'Postal Code', 'Post Code', 'ZIP', 'ZIP Code']);
+      const contactIdx = getColumnIndex(['Contact', 'Contact Name', 'Contact Person', 'Manager', 'Site Contact']);
+      const phoneIdx = getColumnIndex(['Phone', 'Phone Number', 'Contact Phone', 'Telephone', 'Mobile']);
+      
+      // If no client/end customer columns found, use defaults
+      if (clientNameIdx === -1 && endCustomerNameIdx === -1) {
+        const foundColumns = header.map((col: string, idx: number) => `${idx + 1}. ${col}`).join('\n');
+        alert(`No client or end customer columns found.\n\nFound columns:\n${foundColumns}\n\nUsing default values: Client="Australian Digital Security", End Customer="Homes Victoria"`);
+      }
+      
+      for (const row of rows) {
+        if (row.length < 3) continue;
+        
+        const clientName = clientNameIdx !== -1 ? row[clientNameIdx]?.toString().trim() : 'Australian Digital Security';
+        const endCustomerName = endCustomerNameIdx !== -1 ? row[endCustomerNameIdx]?.toString().trim() : 'Homes Victoria';
+        const siteName = siteNameIdx !== -1 ? row[siteNameIdx]?.toString().trim() : '';
+        const address = row[addressIdx]?.toString().trim() || '';
+        const suburb = row[suburbIdx]?.toString().trim() || '';
+        const state = row[stateIdx]?.toString().trim() || '';
+        const postcode = row[postcodeIdx]?.toString().trim() || '';
+        const contact = row[contactIdx]?.toString().trim() || '';
+        const phone = row[phoneIdx]?.toString().trim() || '';
+        
+        // Skip empty rows
+        if (row.length < 2) continue;
+        
+        try {
+          // Find or create client
+          let client = clients.find(c => c.name.toLowerCase() === clientName.toLowerCase());
+          if (!client) {
+            // Create new client
+            const clientId = await createClient({
+              name: clientName,
+              contact_name: contact || '',
+              email: '',
+              phone: phone || '',
+              address: address || '',
+              suburb: suburb || '',
+              state: state || '',
+              postcode: postcode || '',
+              country: 'Australia'
+            });
+            client = { id: clientId, name: clientName };
+          }
+          
+          // Find or create end customer
+          let endCustomer = client.customers?.find(ec => ec.name.toLowerCase() === endCustomerName.toLowerCase());
+          if (!endCustomer) {
+            const customerId = await createEndCustomer(client.id, {
+              name: endCustomerName,
+              contact_name: contact || '',
+              email: '',
+              phone: phone || '',
+              address: address || '',
+              suburb: suburb || '',
+              state: state || '',
+              postcode: postcode || '',
+              country: 'Australia'
+            });
+            endCustomer = { id: customerId, name: endCustomerName };
+          }
+          
+          // Create site
+          await createSite(client.id, endCustomer.id, {
+            name: siteName || `${address || 'Site'} ${suburb || ''}`.trim() || 'Unnamed Site',
+            address: address || '',
+            suburb: suburb || '',
+            state: state || '',
+            postcode: postcode || '',
+            country: 'Australia',
+            site_contact: contact || '',
+            notes: '',
+            equipment: []
+          });
+          
+          importedCount++;
+        } catch (error) {
+          console.error('Error importing site:', error);
+          skippedCount++;
+        }
+      }
+      
+      alert(`Sites import complete: ${importedCount} imported, ${skippedCount} skipped`);
+      refresh();
+    } catch (error) {
+      console.error('Error processing file:', error);
+      alert('Error processing file. Please check the format and try again.');
+    }
   };
 
   const addClient = async (e: React.FormEvent) => {
@@ -222,11 +357,40 @@ const Clients: React.FC = () => {
     }
   };
 
+  const handleDeleteSite = async (clientId: string, customerId: string, siteId: string) => {
+    if (window.confirm('Are you sure you want to delete this site? This action cannot be undone.')) {
+      try {
+        await deleteSite(clientId, customerId, siteId);
+        
+        setClients(prev => prev.map(client => 
+          client.id === clientId 
+            ? {
+                ...client,
+                customers: client.customers?.map((cust: any) => 
+                  cust.id === customerId 
+                    ? {
+                        ...cust,
+                        sites: cust.sites?.filter((s: any) => s.id !== siteId)
+                      }
+                    : cust
+                )
+              }
+            : client
+          )
+        );
+      } catch (error) {
+        console.error('Error deleting site:', error);
+        alert('Error deleting site. Please try again.');
+      }
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h1 className="text-3xl font-bold text-white">Clients</h1>
         <div className="flex items-center gap-3">
+          <button onClick={()=>setShowImportSites(true)} className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-md">Import Sites</button>
           <button onClick={()=>setShowAddClient(true)} className="bg-darker-blue hover:bg-blue-700 text-white px-4 py-2 rounded-md">Add Client</button>
           {loading && <span className="text-gray-400 text-sm">Loading…</span>}
         </div>
@@ -416,6 +580,7 @@ const Clients: React.FC = () => {
                                   }`}>
                                     {s.is_active !== false ? 'Disable' : 'Enable'}
                                   </button>
+                                  <button onClick={() => handleDeleteSite(cl.id, cust.id, s.id)} className="bg-red-600 hover:bg-red-700 text-white px-2 py-1 rounded text-xs">Delete</button>
                                 </div>
                               </div>
                             ))}
@@ -618,6 +783,44 @@ const Clients: React.FC = () => {
                 <button type="button" onClick={()=>setEditingSite(null)} className="bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded-md">Close</button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Import Sites Modal */}
+      {showImportSites && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-gray-800 rounded-lg p-6 w-full max-w-md">
+            <h2 className="text-xl font-semibold text-white mb-4">Import Sites</h2>
+            <div className="mb-4">
+              <p className="text-gray-300 text-sm mb-2">Supported formats: XLSX, IIF, TXT</p>
+              <p className="text-gray-300 text-sm mb-2">Required columns (flexible naming):</p>
+              <div className="bg-gray-700 p-3 rounded text-xs text-gray-300">
+                <div className="mb-2"><strong>Required:</strong> Client Name, End Customer Name</div>
+                <div className="mb-2"><strong>Optional:</strong> Site Name, Address, Suburb/City, State, Postcode, Contact, Phone</div>
+                <div className="text-gray-400 text-xs mt-2">If Site Name is blank, it will use Address + Suburb or "Unnamed Site"</div>
+              </div>
+            </div>
+            <input
+              type="file"
+              accept=".xlsx,.txt,.iif"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) {
+                  importSites(file);
+                  setShowImportSites(false);
+                }
+              }}
+              className="w-full bg-gray-700 text-white px-3 py-2 rounded-md mb-4"
+            />
+            <div className="flex space-x-3">
+              <button
+                onClick={() => setShowImportSites(false)}
+                className="flex-1 bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded-md transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         </div>
       )}

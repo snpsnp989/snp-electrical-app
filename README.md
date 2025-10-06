@@ -1,21 +1,19 @@
 # SNP Electrical - Maintenance Management System
 
-A comprehensive maintenance management system for SNP Electrical, designed to manage jobs, technicians, customers, and automated service report generation.
+A comprehensive maintenance management system for SNP Electrical, designed to manage jobs, technicians, and customers.
 
 ## Features
 
 - **Job Management**: Create, assign, and track maintenance jobs
 - **Technician Assignment**: Assign jobs to specific technicians
 - **Customer Management**: Manage customer information and contact details
-- **Service Reports**: Generate and send service reports to customers
-- **Monthly Email System**: Bulk send service reports monthly
 - **Professional Dark UI**: Clean, modern interface with dark theme
 
 ## Technology Stack
 
 - **Frontend**: React with TypeScript, Tailwind CSS
 - **Backend**: Node.js with Express
-- **Database**: SQLite
+- **Database**: Firebase Firestore
 - **Email**: Nodemailer
 
 ## Setup Instructions
@@ -96,18 +94,11 @@ A comprehensive maintenance management system for SNP Electrical, designed to ma
 - Set specializations
 - Manage technician assignments
 
-### 5. Service Reports
-- Create service reports for completed jobs
-- Send individual reports immediately
-- Send monthly bulk reports to all customers
-- Track report delivery status
 
 ## Workflow
 
 1. **Create a Job**: Add a new maintenance job and assign it to a technician
 2. **Job Execution**: Technician completes the work and marks job as completed
-3. **Service Report**: Create a detailed service report for the completed job
-4. **Monthly Distribution**: Send all pending reports to customers monthly
 
 ## Email Configuration
 
@@ -118,13 +109,10 @@ To enable email functionality:
    - Generate an app-specific password
    - Use your Gmail address and app password in the `.env` file
 
-2. **Other Email Providers**:
-   - Update the email configuration in `backend/src/routes/reports.js`
-   - Modify the transporter settings for your email service
 
 ## Database
 
-The application uses SQLite for simplicity. The database file (`database.sqlite`) will be created automatically when you first run the backend.
+The application uses Firebase Firestore for cloud-based data storage. The database is automatically configured when you set up Firebase.
 
 ### Sample Data
 The application includes sample customers and technicians for testing purposes.
@@ -138,9 +126,6 @@ The application includes sample customers and technicians for testing purposes.
 - `POST /api/customers` - Create new customer
 - `GET /api/technicians` - Get all technicians
 - `POST /api/technicians` - Create new technician
-- `GET /api/reports` - Get all service reports
-- `POST /api/reports` - Create service report
-- `POST /api/reports/send-monthly` - Send monthly reports
 
 ## Production Deployment
 

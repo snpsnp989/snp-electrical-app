@@ -1,125 +1,136 @@
 const express = require('express');
-const { db } = require('../database');
+const { db } = require('../firebase');
 const router = express.Router();
 
 // Get all equipment
-router.get('/', (req, res) => {
-  const { active_only } = req.query;
-  
-  let query = 'SELECT * FROM equipment';
-  let params = [];
-  
-  if (active_only === 'true') {
-    query += ' WHERE is_active = 1';
-  }
-  
-  query += ' ORDER BY name ASC';
-  
-  db.all(query, params, (err, rows) => {
-    if (err) {
-      res.status(500).json({ error: err.message });
-      return;
+router.get('/', async (req, res) => {
+  try {
+    const { active_only } = req.query;
+    
+    let query = db.collection('equipment');
+    
+    if (active_only === 'true') {
+      query = query.where('is_active', '==', true);
     }
-    res.json(rows);
-  });
+    
+    const equipmentSnapshot = await query.orderBy('name').get();
+    const equipment = [];
+    
+    equipmentSnapshot.forEach(doc => {
+      equipment.push({
+        id: doc.id,
+        ...doc.data()
+      });
+    });
+    
+    res.json(equipment);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Get equipment by ID
-router.get('/:id', (req, res) => {
-  const query = 'SELECT * FROM equipment WHERE id = ?';
-  
-  db.get(query, [req.params.id], (err, row) => {
-    if (err) {
-      res.status(500).json({ error: err.message });
-      return;
-    }
-    if (!row) {
+router.get('/:id', async (req, res) => {
+  try {
+    const equipmentDoc = await db.collection('equipment').doc(req.params.id).get();
+    
+    if (!equipmentDoc.exists) {
       res.status(404).json({ error: 'Equipment not found' });
       return;
     }
-    res.json(row);
-  });
+    
+    res.json({
+      id: equipmentDoc.id,
+      ...equipmentDoc.data()
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Create new equipment
-router.post('/', (req, res) => {
-  const { name, description } = req.body;
-  
-  // Generate unique ID
-  const id = 'eq_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
-  
-  const query = `
-    INSERT INTO equipment (id, name, description, is_active)
-    VALUES (?, ?, ?, 1)
-  `;
-  
-  db.run(query, [id, name, description], function(err) {
-    if (err) {
-      res.status(500).json({ error: err.message });
+router.post('/', async (req, res) => {
+  try {
+    const { name, description } = req.body;
+    
+    console.log('Equipment POST request received:', { name, description });
+    
+    if (!name || name.trim() === '') {
+      res.status(400).json({ error: 'Equipment name is required' });
       return;
     }
+    
+    // Generate unique ID
+    const id = 'eq_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
+    
+    const equipmentData = {
+      name,
+      description: description || null,
+      is_active: true,
+      created_at: new Date()
+    };
+    
+    await db.collection('equipment').doc(id).set(equipmentData);
+    
+    console.log('Equipment created successfully:', id);
     res.json({ id, message: 'Equipment created successfully' });
-  });
+  } catch (error) {
+    console.error('Database error creating equipment:', error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Update equipment
-router.put('/:id', (req, res) => {
-  const { name, description, is_active } = req.body;
-  
-  const query = `
-    UPDATE equipment SET 
-      name = ?, description = ?, is_active = ?
-    WHERE id = ?
-  `;
-  
-  db.run(query, [name, description, is_active ? 1 : 0, req.params.id], function(err) {
-    if (err) {
-      res.status(500).json({ error: err.message });
-      return;
-    }
-    if (this.changes === 0) {
-      res.status(404).json({ error: 'Equipment not found' });
-      return;
-    }
+router.put('/:id', async (req, res) => {
+  try {
+    const { name, description, is_active } = req.body;
+    
+    const equipmentData = {
+      name,
+      description: description || null,
+      is_active: is_active !== false,
+      updated_at: new Date()
+    };
+    
+    await db.collection('equipment').doc(req.params.id).update(equipmentData);
+    
     res.json({ message: 'Equipment updated successfully' });
-  });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Toggle equipment status (enable/disable)
-router.patch('/:id/toggle', (req, res) => {
-  const query = `
-    UPDATE equipment SET is_active = NOT is_active
-    WHERE id = ?
-  `;
-  
-  db.run(query, [req.params.id], function(err) {
-    if (err) {
-      res.status(500).json({ error: err.message });
-      return;
-    }
-    if (this.changes === 0) {
+router.patch('/:id/toggle', async (req, res) => {
+  try {
+    const equipmentDoc = await db.collection('equipment').doc(req.params.id).get();
+    
+    if (!equipmentDoc.exists) {
       res.status(404).json({ error: 'Equipment not found' });
       return;
     }
+    
+    const currentData = equipmentDoc.data();
+    await db.collection('equipment').doc(req.params.id).update({
+      is_active: !currentData.is_active,
+      updated_at: new Date()
+    });
+    
     res.json({ message: 'Equipment status toggled successfully' });
-  });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Delete equipment
-router.delete('/:id', (req, res) => {
-  const query = 'DELETE FROM equipment WHERE id = ?';
-  
-  db.run(query, [req.params.id], function(err) {
-    if (err) {
-      res.status(500).json({ error: err.message });
-      return;
-    }
-    if (this.changes === 0) {
-      res.status(404).json({ error: 'Equipment not found' });
-      return;
-    }
+router.delete('/:id', async (req, res) => {
+  try {
+    await db.collection('equipment').doc(req.params.id).delete();
+    
     res.json({ message: 'Equipment deleted successfully' });
-  });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 module.exports = router;

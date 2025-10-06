@@ -1,9 +1,10 @@
 const express = require('express');
 const { db } = require('../firebase');
+const { authenticateToken, requireTechnicianOrAdmin, requireAdmin } = require('../middleware/auth');
 const router = express.Router();
 
 // Get all jobs with customer and technician info
-router.get('/', async (req, res) => {
+router.get('/', authenticateToken, requireTechnicianOrAdmin, async (req, res) => {
   try {
     const jobsSnapshot = await db.collection('jobs').orderBy('created_at', 'desc').get();
     const jobs = [];
@@ -62,7 +63,7 @@ router.get('/', async (req, res) => {
 });
 
 // Get job by ID
-router.get('/:id', async (req, res) => {
+router.get('/:id', authenticateToken, requireTechnicianOrAdmin, async (req, res) => {
   try {
     const jobDoc = await db.collection('jobs').doc(req.params.id).get();
     
@@ -121,13 +122,12 @@ router.get('/:id', async (req, res) => {
 });
 
 // Create new job
-router.post('/', async (req, res) => {
+router.post('/', authenticateToken, requireTechnicianOrAdmin, async (req, res) => {
   try {
     const jobData = {
       ...req.body,
       created_at: new Date(),
       updated_at: new Date(),
-      pdf_generated: false
     };
     
     // Generate SNP ID (simple counter for now)
@@ -151,7 +151,7 @@ router.post('/', async (req, res) => {
 });
 
 // Update job
-router.put('/:id', async (req, res) => {
+router.put('/:id', authenticateToken, requireTechnicianOrAdmin, async (req, res) => {
   try {
     const jobRef = db.collection('jobs').doc(req.params.id);
     const jobDoc = await jobRef.get();
@@ -173,19 +173,6 @@ router.put('/:id', async (req, res) => {
     
     await jobRef.update(updates);
     
-    // If job was marked as completed, attempt to generate PDF automatically (non-blocking)
-    try {
-      if (req.body.status === 'completed') {
-        const baseUrl = process.env.RENDER_EXTERNAL_URL || 'https://snp-electrical-app.onrender.com';
-        console.log('Auto-generating PDF for job', req.params.id, 'using URL:', `${baseUrl}/api/pdf/job/${req.params.id}`);
-        // Trigger PDF generation via existing endpoint; ignore result
-        fetch(`${baseUrl}/api/pdf/job/${req.params.id}`).catch((err) => {
-          console.error('PDF generation failed:', err);
-        });
-      }
-    } catch (outerErr) {
-      console.error('Auto-PDF outer error:', outerErr);
-    }
     
     res.json({ message: 'Job updated successfully' });
   } catch (error) {
@@ -195,7 +182,7 @@ router.put('/:id', async (req, res) => {
 });
 
 // Delete job
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const jobRef = db.collection('jobs').doc(req.params.id);
     const jobDoc = await jobRef.get();
@@ -214,7 +201,7 @@ router.delete('/:id', async (req, res) => {
 });
 
 // Restore job by SNP ID
-router.get('/restore-by-snp/:snpid', async (req, res) => {
+router.get('/restore-by-snp/:snpid', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const snpid = parseInt(req.params.snpid);
     const jobsSnapshot = await db.collection('jobs').where('snpid', '==', snpid).get();
@@ -233,18 +220,8 @@ router.get('/restore-by-snp/:snpid', async (req, res) => {
       updated_at: new Date()
     });
     
-    // Fire-and-forget PDF generation
-    try {
-      const baseUrl = process.env.RENDER_EXTERNAL_URL || 'https://snp-electrical-app.onrender.com';
-      console.log('Auto-generating PDF for restored job', jobId, 'using URL:', `${baseUrl}/api/pdf/job/${jobId}`);
-      fetch(`${baseUrl}/api/pdf/job/${jobId}`).catch((err) => {
-        console.error('PDF generation failed for restored job:', err);
-      });
-    } catch (err) {
-      console.error('Error in PDF generation for restored job:', err);
-    }
     
-    res.json({ message: 'Job restored to completed and PDF generation triggered', jobId, snpid });
+    res.json({ message: 'Job restored to completed', jobId, snpid });
   } catch (error) {
     console.error('Error restoring job:', error);
     res.status(500).json({ error: 'Failed to restore job' });

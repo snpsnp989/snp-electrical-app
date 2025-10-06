@@ -18,15 +18,6 @@ interface PerformanceMetrics {
 
 interface TechnicianPerformanceProps {
   technicianId: string;
-  timesheet: Array<{
-    id: string;
-    jobId: string;
-    jobTitle: string;
-    startTime: Date;
-    endTime?: Date;
-    totalHours: number;
-    status: 'active' | 'completed';
-  }>;
   jobs: Array<{
     id: string;
     title: string;
@@ -38,7 +29,6 @@ interface TechnicianPerformanceProps {
 
 const TechnicianPerformance: React.FC<TechnicianPerformanceProps> = ({ 
   technicianId, 
-  timesheet, 
   jobs 
 }) => {
   const [metrics, setMetrics] = useState<PerformanceMetrics | null>(null);
@@ -46,7 +36,7 @@ const TechnicianPerformance: React.FC<TechnicianPerformanceProps> = ({
 
   useEffect(() => {
     calculateMetrics();
-  }, [timesheet, jobs, timeRange]);
+  }, [jobs, timeRange]);
 
   const calculateMetrics = () => {
     const now = new Date();
@@ -55,13 +45,11 @@ const TechnicianPerformance: React.FC<TechnicianPerformanceProps> = ({
     const filteredJobs = jobs.filter(job => 
       new Date(job.scheduled_date) >= startDate
     );
-    
-    const filteredTimesheet = timesheet.filter(entry => 
-      entry.startTime >= startDate
-    );
 
     const completedJobs = filteredJobs.filter(job => job.status === 'completed');
-    const totalHours = filteredTimesheet.reduce((sum, entry) => sum + entry.totalHours, 0);
+    
+    // Mock metrics since timesheet is removed
+    const totalHours = completedJobs.length * 2; // Assume 2 hours per job
     const averageJobTime = completedJobs.length > 0 ? totalHours / completedJobs.length : 0;
     
     // Calculate efficiency (jobs per hour)
@@ -73,8 +61,8 @@ const TechnicianPerformance: React.FC<TechnicianPerformanceProps> = ({
     // Calculate customer rating (mock data for demo)
     const customerRating = Math.random() * 1 + 4; // 4-5 stars
     
-    // Calculate recent activity
-    const recentActivity = getRecentActivity(filteredTimesheet, 7);
+    // Calculate recent activity (mock data)
+    const recentActivity = getRecentActivity(completedJobs, 7);
     
     const photoCount = filteredJobs.reduce((count, job) => 
       count + (job.photos?.length || 0), 0
@@ -109,19 +97,20 @@ const TechnicianPerformance: React.FC<TechnicianPerformanceProps> = ({
     return start;
   };
 
-  const getRecentActivity = (timesheet: any[], days: number) => {
+  const getRecentActivity = (completedJobs: any[], days: number) => {
     const activity = [];
     for (let i = days - 1; i >= 0; i--) {
       const date = new Date();
       date.setDate(date.getDate() - i);
-      const dayTimesheet = timesheet.filter(entry => 
-        entry.startTime.toDateString() === date.toDateString()
-      );
+      const dayJobs = completedJobs.filter(job => {
+        const jobDate = new Date(job.completed_date || job.scheduled_date);
+        return jobDate.toDateString() === date.toDateString();
+      });
       
       activity.push({
         date: date.toLocaleDateString(),
-        jobs: dayTimesheet.length,
-        hours: dayTimesheet.reduce((sum, entry) => sum + entry.totalHours, 0)
+        jobs: dayJobs.length,
+        hours: dayJobs.length * 2 // Mock 2 hours per job
       });
     }
     return activity;

@@ -13,9 +13,10 @@ const Navigation: React.FC<NavigationProps> = ({ activeTab, setActiveTab, onLogo
     { id: 'dashboard', label: 'Dashboard', icon: '📊' },
     { id: 'jobs', label: 'Jobs', icon: '🔧' },
     { id: 'customers', label: 'Clients', icon: '🏢' },
-    { id: 'technicians', label: 'Technicians', icon: '👨‍🔧' },
+    { id: 'technicians', label: 'Users', icon: '👥' },
     { id: 'parts', label: 'Parts', icon: '🧩' },
-    { id: 'equipment', label: 'Equipment', icon: '⚙️' }
+    { id: 'equipment', label: 'Equipment', icon: '⚙️' },
+    { id: 'reports', label: 'Reports', icon: '📄' }
   ];
 
   return (

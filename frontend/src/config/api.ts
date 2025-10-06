@@ -3,7 +3,7 @@ export const getApiUrl = (): string => {
   // For production (Firebase hosting), use Render backend
   if (window.location.hostname === 'snpelect.web.app' || 
       window.location.hostname === 'snpelect.firebaseapp.com') {
-    return 'https://snp-electrical-app.onrender.com';
+    return 'https://snp-electrical-backend.onrender.com';
   }
   
   // For localhost development
