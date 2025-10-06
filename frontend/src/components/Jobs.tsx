@@ -3,7 +3,7 @@ import { flushSync } from 'react-dom';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 import { db } from '../firebase';
-import { collection, getDocs, query, onSnapshot, doc, getDoc } from 'firebase/firestore';
+import { collection, getDocs, query, onSnapshot, doc, getDoc, updateDoc } from 'firebase/firestore';
 import { getApiUrl } from '../config/api';
 import { apiClient } from '../utils/apiClient';
 import { getJobs as getJobsFromFirebase, createJob as createJobInFirebase, updateJob as updateJobInFirebase, deleteJob as deleteJobInFirebase } from '../services/firebaseService';
@@ -406,7 +406,12 @@ const Jobs: React.FC = () => {
       // Apply technician completion logic when editing completed jobs
       if (editingJob && editingJob.status === 'completed') {
         // Include all technician completion fields with same logic as technician portal
-        payload.action_taken = appendStandardActionTaken(formData.actionTaken);
+        // Only apply standard action taken if the field has been modified
+        if (formData.actionTaken && formData.actionTaken.trim() !== '') {
+          payload.action_taken = appendStandardActionTaken(formData.actionTaken);
+        } else {
+          payload.action_taken = formData.actionTaken || '';
+        }
         payload.service_type = formData.serviceType;
         payload.parts_json = JSON.stringify(parts);
         payload.arrival_time = formData.arrivalTime;
@@ -419,6 +424,8 @@ const Jobs: React.FC = () => {
         payload.updated_at = new Date();
         
         console.log('🔍 Admin completing job with payload:', payload);
+        console.log('🔍 Action taken field:', formData.actionTaken);
+        console.log('🔍 Final action_taken payload:', payload.action_taken);
       }
     
       if (editingJob) {
@@ -645,26 +652,26 @@ const Jobs: React.FC = () => {
     }
 
     try {
-      const response = await fetch(`${getApiUrl()}/api/send-reports`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('adminToken')}`
-        },
-        body: JSON.stringify({
-          jobIds: selectedJobs
-        })
+      // Update each selected job to "sent_to_customer" status
+      const updatePromises = selectedJobs.map(async (jobId) => {
+        const jobRef = doc(db, 'jobs', jobId);
+        await updateDoc(jobRef, {
+          status: 'sent_to_customer',
+          report_sent_date: new Date().toISOString(),
+          updated_at: new Date()
+        });
       });
 
-      if (response.ok) {
-        alert(`Successfully sent ${selectedJobs.length} report(s) to customers`);
-        setSelectedJobs([]);
-        setIsSelectAll(false);
-        // Jobs will update automatically via real-time listener
-      } else {
-        const error = await response.json();
-        alert(`Failed to send reports: ${error.message || 'Unknown error'}`);
-      }
+      await Promise.all(updatePromises);
+
+      alert(`Successfully sent ${selectedJobs.length} report(s) to customers`);
+      setSelectedJobs([]);
+      setIsSelectAll(false);
+      
+      // Switch to sent_to_customer tab to show the updated jobs
+      setFilter('sent_to_customer');
+      
+      // Jobs will update automatically via real-time listener
     } catch (error) {
       console.error('Error sending reports:', error);
       alert('Failed to send reports to customers');
@@ -1189,14 +1196,14 @@ const Jobs: React.FC = () => {
       console.log('🔍 Latest job data from Firestore:', latestJobData);
       console.log('🔍 Latest parts_json:', latestJobData.parts_json);
       
-      // Generate service report number
-      const reportNumber = `SR-${Date.now()}`;
+      // Use the unique service report number (snpid) from the job data
+      const serviceReportNumber = latestJobData.snpid || latestJobData.id;
       console.log('🔍 About to call generatePDF with latest job data:', latestJobData);
-      console.log('🔍 Report number:', reportNumber);
+      console.log('🔍 Service Report Number (snpid):', serviceReportNumber);
       
       const pdfDoc = await generatePDF(latestJobData);
       console.log('🔍 PDF generated successfully');
-      const fileName = `service-report-${reportNumber}.pdf`;
+      const fileName = `SRN-${serviceReportNumber}.pdf`;
       pdfDoc.save(fileName);
       console.log('🔍 PDF saved as:', fileName);
     } catch (error) {
@@ -1253,7 +1260,13 @@ const Jobs: React.FC = () => {
       (job as any).client_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       (job as any).end_customer_name?.toLowerCase().includes(searchTerm.toLowerCase());
 
-    const statusMatch = job.status === filter;
+    let statusMatch = false;
+    if (filter === 'sent_to_customer') {
+      // Show jobs that have been sent to customer (have report_sent_date or status is sent_to_customer)
+      statusMatch = (job as any).report_sent_date || job.status === 'sent_to_customer';
+    } else {
+      statusMatch = job.status === filter;
+    }
     const serviceTypeMatch = serviceTypeFilter === '' || 
       (job as any).service_type === serviceTypeFilter || 
       (job as any).serviceType === serviceTypeFilter;
@@ -1283,16 +1296,16 @@ const Jobs: React.FC = () => {
   console.log('Search term:', searchTerm);
 
   return (
-    <div key={refreshKey} className="min-h-screen bg-gray-50">
-      <div className="bg-white shadow-sm border-b border-gray-200">
+    <div key={refreshKey} className="min-h-screen bg-slate-900">
+      <div className="bg-slate-800 shadow-sm border-b border-slate-700">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center py-6">
             <div>
-              <h1 className="text-3xl font-bold text-gray-900">Work Orders</h1>
-              <p className="mt-1 text-sm text-gray-600">Manage and track all service requests</p>
+              <h1 className="text-3xl font-bold text-white">Work Orders</h1>
+              <p className="mt-1 text-sm text-slate-300">Manage and track all service requests</p>
             </div>
             <div className="flex space-x-3">
-              {selectedJobs.length > 0 && filter === 'completed' && (
+              {selectedJobs.length > 0 && (filter === 'completed' || filter === 'sent_to_customer') && (
                 <button
                   onClick={handleSendReportsToCustomer}
                   className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg text-white bg-emerald-600 hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500 transition-colors"
@@ -1300,12 +1313,12 @@ const Jobs: React.FC = () => {
                   <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 4.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
                   </svg>
-                  Send Reports ({selectedJobs.length})
+                  Sent to Customer ({selectedJobs.length})
                 </button>
               )}
               <button
                 onClick={() => setShowModal(true)}
-                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
+                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg text-white bg-blue-700 hover:bg-blue-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
               >
                 <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
@@ -1319,11 +1332,11 @@ const Jobs: React.FC = () => {
 
       {/* Filters and Search */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+        <div className="bg-slate-800 rounded-lg shadow-sm border border-slate-700 p-6">
           <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between space-y-4 lg:space-y-0 lg:space-x-6">
             {/* Status Filters */}
             <div className="flex space-x-2">
-              {['pending', 'in_progress', 'completed'].map((status) => (
+              {['pending', 'in_progress', 'completed', 'sent_to_customer'].map((status) => (
               <button
                 key={status}
                 onClick={async () => {
@@ -1343,11 +1356,11 @@ const Jobs: React.FC = () => {
                 }}
                 className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
                   filter === status
-                    ? 'bg-blue-600 text-white shadow-sm'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    ? 'bg-blue-700 text-white shadow-sm'
+                    : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
                 }`}
               >
-                {status.charAt(0).toUpperCase() + status.slice(1).replace('_', ' ')}
+                {status === 'sent_to_customer' ? 'Sent to Customer' : status.charAt(0).toUpperCase() + status.slice(1).replace('_', ' ')}
               </button>
             ))}
           </div>
@@ -1366,14 +1379,14 @@ const Jobs: React.FC = () => {
             🔄 Manual Refresh
           </button>
           
-          {/* Service Type Filter - Only show for completed jobs */}
-          {filter === 'completed' && (
+          {/* Service Type Filter - Only show for completed jobs or sent to customer */}
+          {(filter === 'completed' || filter === 'sent_to_customer') && (
             <div className="flex items-center space-x-2">
-              <label className="text-gray-300 text-sm">Service Type:</label>
+              <label className="text-slate-300 text-sm">Service Type:</label>
               <select
                 value={serviceTypeFilter}
                 onChange={(e) => setServiceTypeFilter(e.target.value)}
-                className="bg-white text-gray-900 border border-gray-300 px-3 py-2 rounded-md text-sm"
+                className="bg-slate-700 text-white border border-slate-600 px-3 py-2 rounded-md text-sm"
               >
                 <option value="">All Service Types</option>
                 <option value="Vandalism">Vandalism</option>
@@ -1391,10 +1404,10 @@ const Jobs: React.FC = () => {
               placeholder="Search jobs by title, description, equipment, site, order number..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full bg-white text-gray-900 px-4 py-2 pl-10 rounded-md border border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="w-full bg-slate-700 text-white px-4 py-2 pl-10 rounded-md border border-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
             <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-              <svg className="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="h-5 w-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
               </svg>
             </div>
@@ -1402,7 +1415,7 @@ const Jobs: React.FC = () => {
           {searchTerm && (
             <button
               onClick={() => setSearchTerm('')}
-              className="bg-gray-600 hover:bg-gray-500 text-white px-3 py-2 rounded-md text-sm transition-colors"
+              className="bg-slate-600 hover:bg-slate-500 text-white px-3 py-2 rounded-md text-sm transition-colors"
             >
               Clear
             </button>
@@ -1412,28 +1425,28 @@ const Jobs: React.FC = () => {
 
       {/* Jobs List */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-8">
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200">
-          <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+        <div className="bg-slate-800 rounded-lg shadow-sm border border-slate-700">
+          <div className="px-6 py-4 border-b border-slate-700 flex justify-between items-center">
             <div>
-              <h2 className="text-xl font-semibold text-gray-900">
+              <h2 className="text-xl font-semibold text-white">
                 Jobs ({filteredJobs.length})
               </h2>
               {searchTerm && (
-                <p className="text-sm text-gray-600 mt-1">
+                <p className="text-sm text-slate-300 mt-1">
                   Filtered by "{searchTerm}"
                 </p>
               )}
             </div>
-          {filteredJobs.length > 0 && filter === 'completed' && (
+          {filteredJobs.length > 0 && (filter === 'completed' || filter === 'sent_to_customer') && (
             <div className="flex items-center space-x-2">
               <input
                 type="checkbox"
                 id="selectAll"
                 checked={isSelectAll}
                 onChange={handleSelectAll}
-                className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+                className="w-4 h-4 text-blue-600 bg-slate-700 border-slate-600 rounded focus:ring-blue-500"
               />
-              <label htmlFor="selectAll" className="text-sm text-gray-300">
+              <label htmlFor="selectAll" className="text-sm text-slate-300">
                 Select All
               </label>
             </div>
@@ -1443,26 +1456,26 @@ const Jobs: React.FC = () => {
           {filteredJobs.length > 0 ? (
             <div className="space-y-4">
               {filteredJobs.map((job) => (
-                <div key={job.id} className="flex items-center justify-between p-6 bg-white border border-gray-200 rounded-lg hover:shadow-md transition-shadow">
+                <div key={job.id} className="flex items-center justify-between p-6 bg-slate-700 border border-slate-600 rounded-lg hover:shadow-md transition-shadow">
                   <div className="flex items-center space-x-3 flex-1">
-                    {filter === 'completed' && (
+                    {(filter === 'completed' || filter === 'sent_to_customer') && (
                       <input
                         type="checkbox"
                         checked={selectedJobs.includes(job.id)}
                         onChange={() => handleJobSelection(job.id)}
-                        className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+                        className="w-4 h-4 text-blue-600 bg-slate-800 border-slate-600 rounded focus:ring-blue-500"
                       />
                     )}
                     <div className="flex-1">
-                    <h3 className="text-gray-900 font-medium flex items-center gap-2">
-                      <span className="px-2 py-0.5 rounded bg-gray-600 text-xs">Service Report Number {(job as any).snpid || job.id}</span>
+                    <h3 className="text-white font-medium flex items-center gap-2">
+                      <span className="px-2 py-0.5 rounded bg-slate-600 text-xs text-white">Service Report Number {(job as any).snpid || job.id}</span>
                     </h3>
-                    <p className="text-gray-600 text-sm mt-1">Order Number: {(job as any).order_number || (job as any).orderNumber || '—'}</p>
-                    <p className="text-gray-600 text-sm">Service Type: {(job as any).service_type || (job as any).serviceType || '—'}</p>
-                    <p className="text-gray-600 text-sm">{(job as any).site_address || (job as any).siteAddress || 'Site address not set'}</p>
-                    <p className="text-gray-600 text-sm">Equipment: {(job as any).equipment || '—'} • Fault: {(job as any).fault_reported || (job as any).faultReported || '—'}</p>
+                    <p className="text-slate-300 text-sm mt-1">Order Number: {(job as any).order_number || (job as any).orderNumber || '—'}</p>
+                    <p className="text-slate-300 text-sm">Service Type: {(job as any).service_type || (job as any).serviceType || '—'}</p>
+                    <p className="text-slate-300 text-sm">{(job as any).site_address || (job as any).siteAddress || 'Site address not set'}</p>
+                    <p className="text-slate-300 text-sm">Equipment: {(job as any).equipment || '—'} • Fault: {(job as any).fault_reported || (job as any).faultReported || '—'}</p>
                     {job.status !== 'completed' && (
-                      <p className="text-gray-600 text-sm mt-2">Requested: {(job as any).requested_date || (job as any).requestedDate || '—'} • Due: {(job as any).due_date || (job as any).dueDate || '—'}</p>
+                      <p className="text-slate-300 text-sm mt-2">Requested: {(job as any).requested_date || (job as any).requestedDate || '—'} • Due: {(job as any).due_date || (job as any).dueDate || '—'}</p>
                     )}
                     
                     </div>
@@ -1471,7 +1484,7 @@ const Jobs: React.FC = () => {
                     <select
                       value={job.status}
                       onChange={(e) => handleStatusChange(job.id, e.target.value)}
-                      className="bg-gray-600 text-white px-3 py-1 rounded-md text-sm"
+                      className="bg-slate-600 text-white px-3 py-1 rounded-md text-sm"
                     >
                       <option value="pending">Pending</option>
                       <option value="in_progress">In Progress</option>
@@ -1531,7 +1544,7 @@ const Jobs: React.FC = () => {
               ))}
             </div>
           ) : (
-            <p className="text-gray-400 text-center py-8">No jobs found</p>
+            <p className="text-slate-400 text-center py-8">No jobs found</p>
           )}
         </div>
       </div>
@@ -1539,9 +1552,9 @@ const Jobs: React.FC = () => {
       {/* Modal */}
       {showModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 w-full max-w-4xl max-h-[90vh] overflow-y-auto shadow-2xl">
+          <div className="bg-slate-800 rounded-lg p-6 w-full max-w-4xl max-h-[90vh] overflow-y-auto shadow-2xl">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xl font-semibold text-gray-900">
+              <h2 className="text-xl font-semibold text-white">
                 {editingJob ? (
                   editingJob.status === 'completed' ? 'Amend Completed Job' : 'Edit Job'
                 ) : 'Add New Job'}
@@ -1720,22 +1733,22 @@ const Jobs: React.FC = () => {
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-gray-700 text-sm font-medium mb-2">Site Contact</label>
-                    <input value={formData.siteContact} onChange={(e)=>setFormData({...formData, siteContact: e.target.value})} className="w-full bg-white text-gray-900 border-2 border-gray-400 px-3 py-2 rounded-md focus:border-blue-500" />
+                    <label className="block text-slate-300 text-sm font-medium mb-2">Site Contact</label>
+                    <input value={formData.siteContact} onChange={(e)=>setFormData({...formData, siteContact: e.target.value})} className="w-full bg-slate-700 text-white border-2 border-slate-600 px-3 py-2 rounded-md focus:border-blue-500" />
                   </div>
                   <div>
-                    <label className="block text-gray-700 text-sm font-medium mb-2">Phone Number</label>
-                    <input value={formData.sitePhone} onChange={(e)=>setFormData({...formData, sitePhone: e.target.value})} className="w-full bg-white text-gray-900 border-2 border-gray-400 px-3 py-2 rounded-md focus:border-blue-500" />
+                    <label className="block text-slate-300 text-sm font-medium mb-2">Phone Number</label>
+                    <input value={formData.sitePhone} onChange={(e)=>setFormData({...formData, sitePhone: e.target.value})} className="w-full bg-slate-700 text-white border-2 border-slate-600 px-3 py-2 rounded-md focus:border-blue-500" />
                   </div>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-gray-700 text-sm font-medium mb-2">Order Number</label>
-                    <input value={formData.orderNumber} onChange={(e)=>setFormData({...formData, orderNumber: e.target.value})} className="w-full bg-white text-gray-900 border-2 border-gray-400 px-3 py-2 rounded-md focus:border-blue-500" />
+                    <label className="block text-slate-300 text-sm font-medium mb-2">Order Number</label>
+                    <input value={formData.orderNumber} onChange={(e)=>setFormData({...formData, orderNumber: e.target.value})} className="w-full bg-slate-700 text-white border-2 border-slate-600 px-3 py-2 rounded-md focus:border-blue-500" />
                   </div>
                   <div>
-                    <label className="block text-gray-700 text-sm font-medium mb-2">Equipment</label>
-                    <select value={formData.equipment} onChange={(e)=>setFormData({...formData, equipment: e.target.value})} className="w-full bg-white text-gray-900 border-2 border-gray-400 px-3 py-2 rounded-md focus:border-blue-500">
+                    <label className="block text-slate-300 text-sm font-medium mb-2">Equipment</label>
+                    <select value={formData.equipment} onChange={(e)=>setFormData({...formData, equipment: e.target.value})} className="w-full bg-slate-700 text-white border-2 border-slate-600 px-3 py-2 rounded-md focus:border-blue-500">
                       <option value="">Select Equipment</option>
                       {equipment.filter(eq => eq.is_active !== false).map((eq) => (
                         <option key={eq.id} value={eq.name}>{eq.name}</option>
@@ -1744,18 +1757,18 @@ const Jobs: React.FC = () => {
                   </div>
                 </div>
                 <div>
-                  <label className="block text-gray-700 text-sm font-medium mb-2">Fault Reported</label>
-                  <input value={formData.faultReported} onChange={(e)=>setFormData({...formData, faultReported: e.target.value})} className="w-full bg-white text-gray-900 border-2 border-gray-400 px-3 py-2 rounded-md focus:border-blue-500" />
+                  <label className="block text-slate-300 text-sm font-medium mb-2">Fault Reported</label>
+                  <input value={formData.faultReported} onChange={(e)=>setFormData({...formData, faultReported: e.target.value})} className="w-full bg-slate-700 text-white border-2 border-slate-600 px-3 py-2 rounded-md focus:border-blue-500" />
                 </div>
               </div>
 
               {technicians.length > 1 && (
               <div>
-                <label className="block text-gray-700 text-sm font-medium mb-2">Technician</label>
+                <label className="block text-slate-300 text-sm font-medium mb-2">Technician</label>
                 <select
                   value={formData.technician_id}
                   onChange={(e) => setFormData({ ...formData, technician_id: e.target.value })}
-                  className="w-full bg-white text-gray-900 border-2 border-gray-400 px-3 py-2 rounded-md focus:border-blue-500"
+                  className="w-full bg-slate-700 text-white border-2 border-slate-600 px-3 py-2 rounded-md focus:border-blue-500"
                 >
                   <option value="">Select Technician</option>
                   {technicians.map((technician) => (
@@ -1772,37 +1785,37 @@ const Jobs: React.FC = () => {
 
               {/* Inspector/Technician Completion Fields - Always show for completed jobs */}
               {editingJob && editingJob.status === 'completed' && (
-                <div className="border-t border-gray-600 pt-4 mt-4">
-                  <h3 className="text-lg font-semibold text-gray-900 mb-4">Inspector/Technician Completion Data</h3>
+                <div className="border-t border-slate-600 pt-4 mt-4">
+                  <h3 className="text-lg font-semibold text-white mb-4">Inspector/Technician Completion Data</h3>
                   
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <div>
-                      <label className="block text-gray-700 text-sm font-medium mb-2">Arrival Time</label>
+                      <label className="block text-slate-300 text-sm font-medium mb-2">Arrival Time</label>
                       <input
                         type="time"
                         value={formData.arrivalTime}
                         onChange={(e) => setFormData({ ...formData, arrivalTime: e.target.value })}
-                        className="w-full bg-white text-gray-900 border-2 border-gray-400 px-3 py-2 rounded-md focus:border-blue-500"
+                        className="w-full bg-slate-700 text-white border-2 border-slate-600 px-3 py-2 rounded-md focus:border-blue-500"
                       />
                     </div>
                     <div>
-                      <label className="block text-gray-700 text-sm font-medium mb-2">Departure Time</label>
+                      <label className="block text-slate-300 text-sm font-medium mb-2">Departure Time</label>
                       <input
                         type="time"
                         value={formData.departureTime}
                         onChange={(e) => setFormData({ ...formData, departureTime: e.target.value })}
-                        className="w-full bg-white text-gray-900 border-2 border-gray-400 px-3 py-2 rounded-md focus:border-blue-500"
+                        className="w-full bg-slate-700 text-white border-2 border-slate-600 px-3 py-2 rounded-md focus:border-blue-500"
                       />
                     </div>
                   </div>
                   
                   
                   <div>
-                    <label className="block text-gray-700 text-sm font-medium mb-2">Service Type</label>
+                    <label className="block text-slate-300 text-sm font-medium mb-2">Service Type</label>
                     <select
                       value={formData.serviceType}
                       onChange={(e) => setFormData({ ...formData, serviceType: e.target.value })}
-                      className="w-full bg-white text-gray-900 border-2 border-gray-400 px-3 py-2 rounded-md focus:border-blue-500"
+                      className="w-full bg-slate-700 text-white border-2 border-slate-600 px-3 py-2 rounded-md focus:border-blue-500"
                     >
                       <option value="">Select Service Type</option>
                       <option value="Vandalism">Vandalism</option>
@@ -1811,7 +1824,7 @@ const Jobs: React.FC = () => {
                   </div>
                   
                   <div>
-                    <label className="block text-gray-700 text-sm font-medium mb-2">Action Taken</label>
+                    <label className="block text-slate-300 text-sm font-medium mb-2">Action Taken</label>
                     <textarea
                       value={formData.actionTaken}
                       onChange={(e) => setFormData({ ...formData, actionTaken: e.target.value })}
@@ -1820,7 +1833,7 @@ const Jobs: React.FC = () => {
                         el.style.height = 'auto';
                         el.style.height = `${el.scrollHeight}px`;
                       }}
-                      className="w-full bg-white text-gray-900 border-2 border-gray-400 px-3 py-2 rounded-md focus:border-blue-500"
+                      className="w-full bg-slate-700 text-white border-2 border-slate-600 px-3 py-2 rounded-md focus:border-blue-500"
                       rows={3}
                       style={{ overflow: 'hidden' }}
                       placeholder="Describe the action taken to resolve the issue..."
@@ -1828,7 +1841,7 @@ const Jobs: React.FC = () => {
                   </div>
                   
                   <div>
-                    <label className="block text-gray-700 text-sm font-medium mb-2">Parts/Labour Used</label>
+                    <label className="block text-slate-300 text-sm font-medium mb-2">Parts/Labour Used</label>
                     
                     {/* Parts Search with Database */}
                     <div className="relative mb-3 parts-search-container">
@@ -1838,13 +1851,13 @@ const Jobs: React.FC = () => {
                         onChange={(e) => handlePartsSearch(e.target.value)}
                         onFocus={() => setShowPartsDropdown(true)}
                         placeholder="Search parts by number or description..."
-                        className="w-full bg-white text-gray-900 border-2 border-gray-400 px-3 py-2 rounded-md focus:border-blue-500"
+                        className="w-full bg-slate-700 text-white border-2 border-slate-600 px-3 py-2 rounded-md focus:border-blue-500"
                       />
                       
                       {/* Parts Dropdown */}
                       {showPartsDropdown && (
-                        <div className="absolute z-10 w-full bg-gray-700 border border-gray-600 rounded-md mt-1 max-h-48 overflow-y-auto">
-                          <div className="px-3 py-2 text-gray-400 text-sm">
+                        <div className="absolute z-10 w-full bg-slate-700 border border-slate-600 rounded-md mt-1 max-h-48 overflow-y-auto">
+                          <div className="px-3 py-2 text-slate-400 text-sm">
                             Debug: showPartsDropdown={showPartsDropdown.toString()}, filteredParts={filteredParts.length}, availableParts={availableParts.length}
                           </div>
                           {filteredParts.length > 0 ? (
@@ -1853,23 +1866,23 @@ const Jobs: React.FC = () => {
                                 <div
                                   key={part.id}
                                   onClick={() => addPartToList(part)}
-                                  className="px-3 py-2 hover:bg-gray-600 cursor-pointer border-b border-gray-600 last:border-b-0"
+                                  className="px-3 py-2 hover:bg-slate-600 cursor-pointer border-b border-slate-600 last:border-b-0"
                                 >
                                   <div className="text-white font-medium">{part.partNumber}</div>
-                                  <div className="text-gray-300 text-sm">{part.description}</div>
-                                  <div className="text-gray-400 text-xs">
+                                  <div className="text-slate-300 text-sm">{part.description}</div>
+                                  <div className="text-slate-400 text-xs">
                                     {part.unitType === 'qty' ? 'Quantity' : 'Hours'}
                                   </div>
                                 </div>
                               ))}
                               {filteredParts.length > 10 && (
-                                <div className="px-3 py-2 text-gray-400 text-sm text-center">
+                                <div className="px-3 py-2 text-slate-400 text-sm text-center">
                                   ... and {filteredParts.length - 10} more
                                 </div>
                               )}
                             </>
                           ) : (
-                            <div className="px-3 py-2 text-gray-400 text-sm">
+                            <div className="px-3 py-2 text-slate-400 text-sm">
                               No parts found. Available parts: {availableParts.length}
                             </div>
                           )}
@@ -1887,13 +1900,13 @@ const Jobs: React.FC = () => {
                               onChange={(e)=>{
                                 const v=[...parts]; v[idx].description = e.target.value; setParts(v);
                               }}
-                              className="w-full bg-white text-gray-900 border border-gray-300 px-2 py-2 rounded-md text-sm" 
+                              className="w-full bg-slate-700 text-white border border-slate-600 px-2 py-2 rounded-md text-sm" 
                               placeholder="Part description..." 
                             />
                           </div>
                           
                           {/* Quantity Controls */}
-                          <div className="flex items-center bg-gray-700 rounded-md">
+                          <div className="flex items-center bg-slate-600 rounded-md">
                             <button 
                               type="button"
                               onClick={(e) => {
@@ -1902,7 +1915,7 @@ const Jobs: React.FC = () => {
                                 console.log('🔍 Minus button clicked for part', idx, 'current qty:', p.qty);
                                 updatePartQuantity(idx, p.qty - 1);
                               }}
-                              className="px-2 py-2 text-white hover:bg-gray-600 rounded-l-md text-sm"
+                              className="px-2 py-2 text-white hover:bg-slate-500 rounded-l-md text-sm"
                               disabled={p.qty <= 0}
                             >
                               -
@@ -1922,7 +1935,7 @@ const Jobs: React.FC = () => {
                                 console.log('🔍 Plus button clicked for part', idx, 'current qty:', p.qty);
                                 updatePartQuantity(idx, p.qty + 1);
                               }}
-                              className="px-2 py-2 text-white hover:bg-gray-600 rounded-r-md text-sm"
+                              className="px-2 py-2 text-white hover:bg-slate-500 rounded-r-md text-sm"
                             >
                               +
                             </button>
@@ -2017,7 +2030,7 @@ const Jobs: React.FC = () => {
                     console.log('🔍 Button click - parts length:', parts.length);
                     // Let the form submission handle the rest
                   }}
-                  className="flex-1 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md transition-colors font-medium"
+                  className="flex-1 bg-blue-700 hover:bg-blue-800 text-white px-4 py-2 rounded-md transition-colors font-medium"
                 >
                   {editingJob ? 'Update' : 'Create'} Job
                 </button>
@@ -2051,7 +2064,7 @@ const Jobs: React.FC = () => {
                       technician_name: ''
                     });
                   }}
-                  className="flex-1 bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded-md transition-colors"
+                  className="flex-1 bg-slate-600 hover:bg-slate-700 text-white px-4 py-2 rounded-md transition-colors"
                 >
                   Cancel
                 </button>
