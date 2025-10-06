@@ -212,43 +212,46 @@ const JobsNew: React.FC = () => {
   }
 
   return (
-    <div className="space-y-6 p-6">
+    <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h1 className="text-3xl font-bold text-white">My Work Orders</h1>
-        <button
-          onClick={() => {
-            setEditingJob(null);
-            setFormData({
-              title: '',
-              description: '',
-              technician_id: '',
-              customer_id: '',
-              actionTaken: '',
-              serviceType: '',
-              partsJson: '',
-              arrivalTime: '',
-              departureTime: '',
-              technician_name: ''
-            });
-            setParts([]);
-            setShowModal(true);
-          }}
-          className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
-        >
-          Add New Job
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => {
+              setEditingJob(null);
+              setFormData({
+                title: '',
+                description: '',
+                technician_id: '',
+                customer_id: '',
+                actionTaken: '',
+                serviceType: '',
+                partsJson: '',
+                arrivalTime: '',
+                departureTime: '',
+                technician_name: ''
+              });
+              setParts([]);
+              setShowModal(true);
+            }}
+            className="btn-primary"
+          >
+            ➕ Add New Job
+          </button>
+          {loading && <span className="text-gray-400 text-sm">Loading…</span>}
+        </div>
       </div>
 
       {/* Filter tabs */}
-      <div className="flex space-x-4">
+      <div className="flex space-x-2">
         {['pending', 'in_progress', 'completed'].map(status => (
           <button
             key={status}
             onClick={() => setFilter(status)}
-            className={`px-4 py-2 rounded ${
+            className={`px-4 py-3 rounded-lg text-sm font-medium transition-all duration-200 ${
               filter === status 
-                ? 'bg-blue-600 text-white' 
-                : 'bg-gray-600 text-white hover:bg-gray-700'
+                ? 'bg-snp-secondary text-white shadow-snp' 
+                : 'text-snp-light hover:bg-snp-gray hover:text-white hover:shadow-snp'
             }`}
           >
             {status.charAt(0).toUpperCase() + status.slice(1).replace('_', ' ')}
@@ -257,63 +260,67 @@ const JobsNew: React.FC = () => {
       </div>
 
       {/* Jobs table */}
-      <div className="bg-white rounded-lg shadow overflow-hidden">
-        <table className="min-w-full divide-y divide-gray-200">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Title
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Status
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Created
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Actions
-              </th>
-            </tr>
-          </thead>
-          <tbody className="bg-white divide-y divide-gray-200">
+      <div className="card">
+        <div className="px-6 py-4 border-b border-snp-secondary">
+          <h2 className="text-xl font-semibold text-white">All Jobs</h2>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="min-w-full divide-y divide-snp-secondary">
+            <thead className="bg-snp-gray">
+              <tr>
+                <th className="px-6 py-3 text-left text-xs font-medium text-snp-light uppercase tracking-wider">
+                  Title
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-snp-light uppercase tracking-wider">
+                  Status
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-snp-light uppercase tracking-wider">
+                  Created
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-snp-light uppercase tracking-wider">
+                  Actions
+                </th>
+              </tr>
+            </thead>
+            <tbody className="bg-snp-gray divide-y divide-snp-secondary">
             {filteredJobs.map((job) => (
-              <tr key={job.id}>
-                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+              <tr key={job.id} className="hover:bg-snp-dark transition-colors">
+                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-white">
                   {job.title}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap">
-                  <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                    job.status === 'completed' ? 'bg-green-100 text-green-800' :
-                    job.status === 'in_progress' ? 'bg-yellow-100 text-yellow-800' :
-                    'bg-red-100 text-red-800'
+                  <span className={`inline-flex px-3 py-1 text-xs font-semibold rounded-full ${
+                    job.status === 'completed' ? 'bg-green-900 text-green-300' :
+                    job.status === 'in_progress' ? 'bg-yellow-900 text-yellow-300' :
+                    'bg-red-900 text-red-300'
                   }`}>
                     {job.status}
                   </span>
                 </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-300">
                   {formatDate(job.created_at)}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm font-medium space-x-2">
                   <button
                     onClick={() => handleEdit(job)}
-                    className="text-blue-600 hover:text-blue-900"
+                    className="bg-snp-secondary hover:bg-snp-accent text-white px-3 py-1 rounded-md text-sm transition-all duration-200"
                   >
-                    Edit
+                    ✏️ Edit
                   </button>
                   {job.status !== 'completed' && (
                     <button
                       onClick={() => handleStatusChange(job.id, 'completed')}
-                      className="text-green-600 hover:text-green-900"
+                      className="bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded-md text-sm transition-all duration-200"
                     >
-                      Complete
+                      ✅ Complete
                     </button>
                   )}
                   {job.status === 'completed' && (
                     <button
                       onClick={() => handleStatusChange(job.id, 'pending')}
-                      className="text-yellow-600 hover:text-yellow-900"
+                      className="bg-yellow-600 hover:bg-yellow-700 text-white px-3 py-1 rounded-md text-sm transition-all duration-200"
                     >
-                      Reopen
+                      🔄 Reopen
                     </button>
                   )}
                 </td>
@@ -321,60 +328,61 @@ const JobsNew: React.FC = () => {
             ))}
           </tbody>
         </table>
+        </div>
       </div>
 
       {/* Modal */}
       {showModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-            <h2 className="text-xl font-bold mb-4">
+          <div className="bg-snp-gray rounded-lg p-6 w-full max-w-4xl max-h-[90vh] overflow-y-auto shadow-snp-lg">
+            <h2 className="text-xl font-semibold text-white mb-4">
               {editingJob ? 'Edit Job' : 'Add New Job'}
             </h2>
             
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700">Title</label>
+            <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-6 gap-4">
+              <div className="md:col-span-6">
+                <label className="block text-sm font-medium text-snp-light mb-2">Title</label>
                 <input
                   type="text"
                   value={formData.title}
                   onChange={(e) => setFormData({...formData, title: e.target.value})}
-                  className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                  className="input-field"
                   required
                 />
               </div>
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700">Description</label>
+              <div className="md:col-span-6">
+                <label className="block text-sm font-medium text-snp-light mb-2">Description</label>
                 <textarea
                   value={formData.description}
                   onChange={(e) => setFormData({...formData, description: e.target.value})}
-                  className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                  className="input-field"
                   rows={3}
                 />
               </div>
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700">Action Taken</label>
+              <div className="md:col-span-6">
+                <label className="block text-sm font-medium text-snp-light mb-2">Action Taken</label>
                 <textarea
                   value={formData.actionTaken}
                   onChange={(e) => setFormData({...formData, actionTaken: e.target.value})}
-                  className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                  className="input-field"
                   rows={3}
                 />
               </div>
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700">Service Type</label>
+              <div className="md:col-span-6">
+                <label className="block text-sm font-medium text-snp-light mb-2">Service Type</label>
                 <input
                   type="text"
                   value={formData.serviceType}
                   onChange={(e) => setFormData({...formData, serviceType: e.target.value})}
-                  className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2"
+                  className="input-field"
                 />
               </div>
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700">Parts Used</label>
+              <div className="md:col-span-6">
+                <label className="block text-sm font-medium text-snp-light mb-2">Parts Used</label>
                 {parts.map((part, index) => (
                   <div key={index} className="flex space-x-2 mb-2">
                     <input
@@ -382,46 +390,46 @@ const JobsNew: React.FC = () => {
                       placeholder="Part description"
                       value={part.description}
                       onChange={(e) => updatePart(index, 'description', e.target.value)}
-                      className="flex-1 border border-gray-300 rounded-md px-3 py-2"
+                      className="flex-1 input-field"
                     />
                     <input
                       type="number"
                       placeholder="Qty"
                       value={part.qty}
                       onChange={(e) => updatePart(index, 'qty', parseInt(e.target.value) || 0)}
-                      className="w-20 border border-gray-300 rounded-md px-3 py-2"
+                      className="w-20 input-field"
                     />
                     <button
                       type="button"
                       onClick={() => removePart(index)}
-                      className="bg-red-500 text-white px-3 py-2 rounded hover:bg-red-600"
+                      className="bg-red-600 hover:bg-red-700 text-white px-3 py-2 rounded-md transition-all duration-200"
                     >
-                      Remove
+                      🗑️ Remove
                     </button>
                   </div>
                 ))}
                 <button
                   type="button"
                   onClick={addPart}
-                  className="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600"
+                  className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-md transition-all duration-200"
                 >
-                  Add Part
+                  ➕ Add Part
                 </button>
               </div>
 
-              <div className="flex space-x-4">
+              <div className="md:col-span-6 flex justify-end gap-3">
                 <button
                   type="submit"
-                  className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
+                  className="btn-primary"
                 >
-                  {editingJob ? 'Update Job' : 'Create Job'}
+                  {editingJob ? '💾 Update Job' : '➕ Create Job'}
                 </button>
                 <button
                   type="button"
                   onClick={() => setShowModal(false)}
-                  className="bg-gray-500 text-white px-4 py-2 rounded hover:bg-gray-600"
+                  className="btn-secondary"
                 >
-                  Cancel
+                  ❌ Cancel
                 </button>
               </div>
             </form>
