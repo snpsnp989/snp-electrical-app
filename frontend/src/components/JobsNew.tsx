@@ -38,6 +38,20 @@ interface Job {
   arrivalTime?: string;
   departureTime?: string;
   technician_name?: string;
+  // Admin-created fields
+  clientId?: string;
+  endCustomerId?: string;
+  siteId?: string;
+  siteContact?: string;
+  sitePhone?: string;
+  orderNumber?: string;
+  equipment?: string;
+  faultReported?: string;
+  requestedDate?: string;
+  dueDate?: string;
+  clientName?: string;
+  endCustomerName?: string;
+  siteAddress?: string;
 }
 
 const JobsNew: React.FC = () => {
@@ -102,6 +116,18 @@ const JobsNew: React.FC = () => {
       arrivalTime: job.arrivalTime || '',
       departureTime: job.departureTime || '',
       technician_name: job.technician_name || ''
+    });
+
+    // Log the original admin data for debugging
+    console.log('🔍 Original Admin Data:', {
+      clientName: job.clientName,
+      endCustomerName: job.endCustomerName,
+      siteAddress: job.siteAddress,
+      siteContact: job.siteContact,
+      sitePhone: job.sitePhone,
+      orderNumber: job.orderNumber,
+      equipment: job.equipment,
+      faultReported: job.faultReported
     });
 
     // Load parts
@@ -340,6 +366,70 @@ const JobsNew: React.FC = () => {
             </h2>
             
             <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-6 gap-4">
+              {/* Original Admin Data - Read Only */}
+              {editingJob && (editingJob.clientName || editingJob.endCustomerName || editingJob.siteAddress) && (
+                <div className="md:col-span-6">
+                  <div className="bg-snp-dark rounded-lg p-4 border border-snp-secondary">
+                    <h3 className="text-lg font-semibold text-snp-accent mb-3">📋 Original Job Details (Admin Created)</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {editingJob.clientName && (
+                        <div>
+                          <label className="block text-sm font-medium text-snp-light mb-1">Client</label>
+                          <div className="bg-snp-gray text-white px-3 py-2 rounded-md">{editingJob.clientName}</div>
+                        </div>
+                      )}
+                      {editingJob.endCustomerName && (
+                        <div>
+                          <label className="block text-sm font-medium text-snp-light mb-1">End Customer</label>
+                          <div className="bg-snp-gray text-white px-3 py-2 rounded-md">{editingJob.endCustomerName}</div>
+                        </div>
+                      )}
+                      {editingJob.siteAddress && (
+                        <div>
+                          <label className="block text-sm font-medium text-snp-light mb-1">Site Address</label>
+                          <div className="bg-snp-gray text-white px-3 py-2 rounded-md">{editingJob.siteAddress}</div>
+                        </div>
+                      )}
+                      {editingJob.siteContact && (
+                        <div>
+                          <label className="block text-sm font-medium text-snp-light mb-1">Site Contact</label>
+                          <div className="bg-snp-gray text-white px-3 py-2 rounded-md">{editingJob.siteContact}</div>
+                        </div>
+                      )}
+                      {editingJob.sitePhone && (
+                        <div>
+                          <label className="block text-sm font-medium text-snp-light mb-1">Site Phone</label>
+                          <div className="bg-snp-gray text-white px-3 py-2 rounded-md">{editingJob.sitePhone}</div>
+                        </div>
+                      )}
+                      {editingJob.orderNumber && (
+                        <div>
+                          <label className="block text-sm font-medium text-snp-light mb-1">Order Number</label>
+                          <div className="bg-snp-gray text-white px-3 py-2 rounded-md">{editingJob.orderNumber}</div>
+                        </div>
+                      )}
+                      {editingJob.equipment && (
+                        <div>
+                          <label className="block text-sm font-medium text-snp-light mb-1">Equipment</label>
+                          <div className="bg-snp-gray text-white px-3 py-2 rounded-md">{editingJob.equipment}</div>
+                        </div>
+                      )}
+                      {editingJob.faultReported && (
+                        <div className="md:col-span-2">
+                          <label className="block text-sm font-medium text-snp-light mb-1">Fault Reported</label>
+                          <div className="bg-snp-gray text-white px-3 py-2 rounded-md">{editingJob.faultReported}</div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Technician Completion Section */}
+              <div className="md:col-span-6">
+                <h3 className="text-lg font-semibold text-snp-accent mb-3">🔧 Technician Completion</h3>
+              </div>
+
               <div className="md:col-span-6">
                 <label className="block text-sm font-medium text-snp-light mb-2">Title</label>
                 <input
