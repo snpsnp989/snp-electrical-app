@@ -403,14 +403,22 @@ const Jobs: React.FC = () => {
         status: editingJob ? editingJob.status : 'pending' // Preserve existing status when editing, set to pending for new jobs
       };
 
-      // Only include technician completion fields when editing completed jobs
+      // Apply technician completion logic when editing completed jobs
       if (editingJob && editingJob.status === 'completed') {
-        payload.action_taken = formData.actionTaken;
+        // Include all technician completion fields with same logic as technician portal
+        payload.action_taken = appendStandardActionTaken(formData.actionTaken);
         payload.service_type = formData.serviceType;
         payload.parts_json = JSON.stringify(parts);
         payload.arrival_time = formData.arrivalTime;
         payload.departure_time = formData.departureTime;
         payload.technician_name = formData.technician_name;
+        
+        // Apply same completion logic as technician portal
+        payload.status = 'completed';
+        payload.completed_date = new Date().toISOString();
+        payload.updated_at = new Date();
+        
+        console.log('🔍 Admin completing job with payload:', payload);
       }
     
       if (editingJob) {
