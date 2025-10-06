@@ -46,9 +46,7 @@ function App() {
   };
 
   useEffect(() => {
-    // Clear any old authentication data first
-    localStorage.removeItem('technicianId');
-    localStorage.removeItem('technicianName');
+    // Clear any old admin authentication data first
     localStorage.removeItem('adminToken');
     localStorage.removeItem('adminEmail');
     
