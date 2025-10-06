@@ -479,6 +479,8 @@ const Jobs: React.FC = () => {
     console.log('🔍 EDIT BUTTON CLICKED!');
     console.log('🔍 Opening amend modal for job:', job.id);
     console.log('🔍 Job data structure:', job);
+    console.log('🔍 Job photos:', job.photos);
+    console.log('🔍 Job photos length:', job.photos?.length);
     
     // Simple approach - just like Visnu codebase
     const jobToEdit = job;
@@ -1360,7 +1362,12 @@ const Jobs: React.FC = () => {
                     : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
                 }`}
               >
-                {status === 'sent_to_customer' ? 'Sent to Customer' : status.charAt(0).toUpperCase() + status.slice(1).replace('_', ' ')}
+                {status === 'sent_to_customer' ? 'Sent to Customer' : status.charAt(0).toUpperCase() + status.slice(1).replace('_', ' ')} ({jobs.filter(job => {
+                  if (status === 'sent_to_customer') {
+                    return (job as any).report_sent_date || job.status === 'sent_to_customer';
+                  }
+                  return job.status === status;
+                }).length})
               </button>
             ))}
           </div>
@@ -1975,12 +1982,21 @@ const Jobs: React.FC = () => {
                 </div>
               )}
 
-              {/* Photos Section - Show for completed jobs */}
-              {editingJob && editingJob.status === 'completed' && editingJob.photos && editingJob.photos.length > 0 && (
+              {/* Photos Section - Show for completed jobs and sent to customer jobs */}
+              {(() => {
+                console.log('🔍 Photos section check:', {
+                  editingJob: !!editingJob,
+                  status: editingJob?.status,
+                  hasPhotos: !!editingJob?.photos,
+                  photosLength: editingJob?.photos?.length,
+                  photos: editingJob?.photos
+                });
+                return editingJob && (editingJob.status === 'completed' || editingJob.status === 'sent_to_customer') && editingJob.photos && editingJob.photos.length > 0;
+              })() && (
                 <div className="border-t border-gray-600 pt-4">
                   <h3 className="text-lg font-semibold text-white mb-3">📸 Job Photos</h3>
                   <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                    {editingJob.photos.map((photo, index) => (
+                    {editingJob?.photos?.map((photo, index) => (
                       <div key={index} className="relative group">
                         <img
                           src={photo.url}
@@ -2012,7 +2028,7 @@ const Jobs: React.FC = () => {
                     ))}
                   </div>
                   <p className="text-gray-400 text-sm mt-2">
-                    {editingJob.photos.length} photo{editingJob.photos.length !== 1 ? 's' : ''} uploaded for this job
+                    {editingJob?.photos?.length} photo{editingJob?.photos?.length !== 1 ? 's' : ''} uploaded for this job
                   </p>
                 </div>
               )}
