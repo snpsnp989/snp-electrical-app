@@ -1672,7 +1672,11 @@ const TechnicianMobile: React.FC = () => {
                     {/* Quantity Controls */}
                     <div className="flex items-center bg-gray-700 rounded-md">
                       <button 
-                        onClick={() => updatePartQuantity(idx, p.qty - 1)}
+                        onClick={() => {
+                          const isLabour = /labou?r/i.test(parts[idx].description || '');
+                          const step = isLabour ? 0.5 : 1;
+                          updatePartQuantity(idx, Math.max(0, Number((p.qty - step).toFixed(2))));
+                        }}
                         className="px-2 py-2 text-white hover:bg-gray-600 rounded-l-md text-sm"
                         disabled={p.qty <= 0}
                       >
@@ -1681,12 +1685,23 @@ const TechnicianMobile: React.FC = () => {
                       <input 
                         type="number" 
                         value={p.qty} 
-                        onChange={(e) => updatePartQuantity(idx, Number(e.target.value) || 0)}
+                        onChange={(e) => {
+                          const isLabour = /labou?r/i.test(parts[idx].description || '');
+                          const step = isLabour ? 0.5 : 1;
+                          const raw = Number(e.target.value);
+                          const snapped = isNaN(raw) ? 0 : Math.round(raw / step) * step;
+                          updatePartQuantity(idx, Math.max(0, Number(snapped.toFixed(2))));
+                        }}
                         className="w-12 bg-transparent text-white text-center px-1 py-2 border-0 focus:outline-none text-sm"
                         min="0"
+                        step={/labou?r/i.test(p.description || '') ? 0.5 : 1}
                       />
                       <button
-                        onClick={() => updatePartQuantity(idx, p.qty + 1)}
+                        onClick={() => {
+                          const isLabour = /labou?r/i.test(parts[idx].description || '');
+                          const step = isLabour ? 0.5 : 1;
+                          updatePartQuantity(idx, Number((p.qty + step).toFixed(2)));
+                        }}
                         className="px-2 py-2 text-white hover:bg-gray-600 rounded-r-md text-sm"
                       >
                         +
