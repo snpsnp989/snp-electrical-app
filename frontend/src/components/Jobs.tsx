@@ -37,7 +37,8 @@ const appendStandardActionTaken = (text: string): string => {
   const base = (text || '').trim();
   if (!base) return STANDARD_ACTION_SENTENCE;
   if (base.endsWith(STANDARD_ACTION_SENTENCE)) return base;
-  return `${base}\n\n${STANDARD_ACTION_SENTENCE}`;
+  // Use a single newline so it appears immediately after the technician's entry
+  return `${base}\n${STANDARD_ACTION_SENTENCE}`;
 };
 
 interface Job {
@@ -600,23 +601,14 @@ const Jobs: React.FC = () => {
   };
 
   const handleDelete = async (jobId: string) => {
-    if (!window.confirm('Delete this job? This cannot be undone.')) return;
+    if (!window.confirm('Cancel this job? It will move to the Cancelled tab.')) return;
     try {
-      // Hard delete in Firestore
-      await deleteJobInFirebase(String(jobId));
-      // Optimistically update UI
-      setJobs(prev => prev.filter(j => j.id !== jobId));
-      // Jobs will update automatically via real-time listener
+      // Soft-delete: mark as cancelled (retain record)
+      await updateJobInFirebase(String(jobId), { status: 'cancelled', updated_at: new Date().toISOString() });
+      // UI updates naturally via listener; no hard delete
     } catch (error) {
-      console.error('Hard delete failed, attempting soft delete:', error);
-      try {
-        await updateJobInFirebase(String(jobId), { deleted: true });
-        setJobs(prev => prev.filter(j => j.id !== jobId));
-        // Jobs will update automatically via real-time listener
-      } catch (err2) {
-        console.error('Soft delete also failed:', err2);
-        alert('Failed to delete job');
-      }
+      console.error('Failed to cancel job:', error);
+      alert('Failed to cancel job');
     }
   };
 
@@ -729,68 +721,75 @@ const Jobs: React.FC = () => {
     
     const pageWidth = doc.internal.pageSize.width;
     let currentY = 20;
+    const sectionGap = 8; // unified vertical spacing between major sections
 
-    // Professional header with blue styling
-    // Header background box - dark blue-gray
+    // Professional header with blue styling - COMPACT FOR SINGLE PAGE
+    // Header background box - dark blue-gray (taller to avoid squashed look)
     doc.setFillColor(45, 55, 70); // Dark blue-gray background
-    doc.rect(15, 15, pageWidth - 30, 45, 'F'); // Filled rectangle
+    doc.rect(10, 10, pageWidth - 20, 35, 'F'); // Increased height
     
     // Header border - darker blue
     doc.setDrawColor(30, 40, 55); // Darker blue border
     doc.setLineWidth(0.8);
-    doc.rect(15, 15, pageWidth - 30, 45); // Border rectangle
+    doc.rect(10, 10, pageWidth - 20, 35); // Border rectangle
     
-    // Left side company info - white text on blue background
+    // Left side company info - white text on blue background (COMPACT)
     doc.setFontSize(10);
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(255, 255, 255); // White text on blue background
-    doc.text('18 Newell Close', 20, currentY);
+    doc.text('18 Newell Close', 15, currentY);
+    currentY += 4; // increased line spacing for readability
+    doc.text('Taylors Lakes 3038', 15, currentY);
     currentY += 4;
-    doc.text('Taylors Lakes 3038', 20, currentY);
+    doc.text('0488 038 898', 15, currentY);
     currentY += 4;
-    doc.text('0488 038 898', 20, currentY);
-    currentY += 4;
-    doc.text('snpelec@gmail.com', 20, currentY);
+    doc.text('snpelec@gmail.com', 15, currentY);
     currentY += 4;
     
-    // Center - Service Report title with blue styling
-    doc.setFontSize(18);
+    // Center - Service Report title (centered without version)
+    doc.setFontSize(12); // larger for prominence
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(255, 255, 255); // White text on blue background
-    doc.text('SERVICE REPORT v2.0', pageWidth / 2 - 50, 25);
+    const title = 'SERVICE REPORT';
+    const titleWidth = doc.getTextWidth(title);
+    const titleX = (pageWidth - titleWidth) / 2;
+    const titleY = 24; // slightly lower due to taller header
+    doc.text(title, titleX, titleY);
     
-    // Right side - Logo and Company details
+    // Right side - Logo and Company details (COMPACT)
     try {
       // Add the SNP logo image on the right side
-      const logoWidth = 40;
-      const logoHeight = 20;
-      doc.addImage('/snp-logo.jpg', 'JPEG', pageWidth - 60, 15, logoWidth, logoHeight);
+      const logoWidth = 25;
+      const logoHeight = 12;
+      doc.addImage('/snp-logo.jpg', 'JPEG', pageWidth - 40, 14, logoWidth, logoHeight);
     } catch (error) {
       console.log('Logo not found, using text fallback:', error);
       // Fallback to text if logo not found
-      doc.setFontSize(16);
+      doc.setFontSize(10);
       doc.setFont('helvetica', 'bold');
       doc.setTextColor(255, 140, 0); // Orange
-      doc.text('SNP', pageWidth - 60, 20);
-      doc.setFontSize(12);
+      doc.text('SNP', pageWidth - 40, 18);
+      doc.setFontSize(10);
       doc.setFont('helvetica', 'normal');
       doc.setTextColor(0, 0, 0);
-      doc.text('electrical', pageWidth - 60, 30);
+      doc.text('electrical', pageWidth - 40, 25);
     }
     
-    // Company details below logo - white text on blue background
-    doc.setFontSize(12);
+    // Company details below logo - white text on blue background (aligned under logo)
+    doc.setFontSize(10);
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(255, 255, 255); // White text on blue background
-    doc.text('REC 16208', pageWidth - 60, 40);
+    doc.text('REC 16208', pageWidth - 15, 30, { align: 'right' } as any);
     doc.setFontSize(10);
     doc.setFont('helvetica', 'normal');
-    doc.text('ABN: 22 592 137 642', pageWidth - 60, 46);
+    doc.text('ABN: 22 592 137 642', pageWidth - 15, 34, { align: 'right' } as any);
     
-    currentY = 70;
+    currentY = 55; // Match bottom margin (10px below header bottom at y=45)
+    // Gap between header block and first line (Service Report Number)
+    currentY += sectionGap;
 
-    // Helper: split text to size with consistent line height (prevents overlap)
-    const renderLines = (lines: string[], x: number, startY: number, lineHeight = 7, draw = true) => {
+    // Helper: split text to size with consistent line height (COMPACT FOR SINGLE PAGE)
+    const renderLines = (lines: string[], x: number, startY: number, lineHeight = 5.5, draw = true) => {
       let cursorY = startY;
       for (const line of lines) {
         if (draw) doc.text(line || ' ', x, cursorY);
@@ -799,25 +798,25 @@ const Jobs: React.FC = () => {
       return cursorY;
     };
 
-    // Helper function to wrap text using splitTextToSize. If draw=false, only measures.
+    // Helper function to wrap text using splitTextToSize. If draw=false, only measures. (COMPACT)
     const wrapText = (text: string, maxWidth: number, x: number, y: number, draw: boolean = true) => {
       const lines = doc.splitTextToSize(String(text || ''), maxWidth) as string[];
-      return renderLines(lines, x, y, 7, draw);
+      return renderLines(lines, x, y, 5.5, draw); // align with 10pt
     };
 
-    // Helper: wrap multi-paragraph text (handles \n and blank lines). If draw=false, only measures.
+    // Helper: wrap multi-paragraph text (handles \n and blank lines). If draw=false, only measures. (COMPACT)
     const wrapTextBlock = (text: string, maxWidth: number, x: number, y: number, draw: boolean = true) => {
       const paragraphs = String(text || '').replace(/\r\n/g, '\n').split('\n');
       let cursorY = y;
       for (let i = 0; i < paragraphs.length; i++) {
         const p = paragraphs[i];
         if (p.trim().length === 0) {
-          // preserve blank line spacing
-          cursorY += 7;
+          // preserve blank line spacing (COMPACT)
+          cursorY += 5.5; // blank line equal to one line height
           continue;
         }
         const lines = doc.splitTextToSize(p, maxWidth) as string[];
-        cursorY = renderLines(lines, x, cursorY, 7, draw);
+        cursorY = renderLines(lines, x, cursorY, 5.5, draw); // align with 10pt
       }
       return cursorY;
     };
@@ -827,106 +826,117 @@ const Jobs: React.FC = () => {
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(0, 0, 0);
     
-    // Job details section with blue styling
-    // Background for job details - light blue-gray
-    doc.setFillColor(240, 245, 250); // Light blue-gray background
-    doc.rect(15, currentY - 5, pageWidth - 30, 25, 'F');
+    // Job details section - plain white background (no styling)
     
-    // Border for job details - blue border
-    doc.setDrawColor(100, 130, 160);
-    doc.setLineWidth(0.5);
-    doc.rect(15, currentY - 5, pageWidth - 30, 25);
-    
-    // Service Report Number and Date - blue styling
+    // Service Report Number and Date - blue styling (COMPACT)
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(10);
     doc.setTextColor(45, 55, 70); // Dark blue-gray labels
-    doc.text('Service Report Number:', 20, currentY);
+    doc.text('Service Report Number:', 15, currentY);
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(30, 30, 30); // Dark text for values
-    doc.text(String(job.snpid || job.id || 'N/A'), 20 + 50, currentY);
+    doc.text(String(job.snpid || job.id || 'N/A'), 15 + 50, currentY);
     
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(45, 55, 70); // Dark blue-gray labels
-    doc.text('Date:', pageWidth / 2 + 10, currentY);
+    doc.text('Date:', pageWidth / 2 + 5, currentY);
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(30, 30, 30); // Dark text for values
-    doc.text(job.completed_date ? formatDate(job.completed_date) : 'N/A', pageWidth / 2 + 10 + 50, currentY);
-    currentY += 8;
+    doc.text(job.completed_date ? formatDate(job.completed_date) : 'N/A', pageWidth / 2 + 5 + 50, currentY);
+    currentY += 6; // increased spacing
     
-    // Order Number
+    // Order Number (COMPACT)
     doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
     doc.setTextColor(45, 55, 70); // Dark blue-gray labels
-    doc.text('Order Number:', 20, currentY);
+    doc.text('Order Number:', 15, currentY);
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(0, 0, 0); // Black color for order number data
-    doc.text(job.orderNumber || job.order_number || 'N/A', 20 + 50, currentY);
-    currentY += 8;
+    doc.text(job.orderNumber || job.order_number || 'N/A', 15 + 50, currentY);
+    currentY += 6; // increased spacing
     
-    // Customer details section - NO border (like your reference)
+    // Customer details section - NO border (COMPACT)
     // Customer Name
     doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
     doc.setTextColor(45, 55, 70);
-    doc.text("Customer's Name:", 20, currentY);
+    doc.text("Customer's Name:", 15, currentY);
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(30, 30, 30);
-    doc.text(job.clientName || 'N/A', 20 + 50, currentY);
-    currentY += 8;
+    doc.text(job.clientName || 'N/A', 15 + 50, currentY);
+    currentY += 6; // increased spacing
     
-    // Site Name
+    // Site Name (COMPACT)
     doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
     doc.setTextColor(45, 55, 70);
-    doc.text('Site Name:', 20, currentY);
+    doc.text('Site Name:', 15, currentY);
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(30, 30, 30);
-    doc.text(job.endCustomerName || 'N/A', 20 + 50, currentY);
-    currentY += 8;
+    doc.text(job.endCustomerName || 'N/A', 15 + 50, currentY);
+    currentY += 6; // increased spacing
     
-    // Site Address
+    // Site Address (COMPACT)
     doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
     doc.setTextColor(45, 55, 70);
-    doc.text('Site:', 20, currentY);
+    doc.text('Site:', 15, currentY);
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(30, 30, 30);
-    doc.text(job.siteAddress || 'N/A', 20 + 50, currentY);
-    currentY += 8;
+    doc.text(job.siteAddress || 'N/A', 15 + 50, currentY);
+    currentY += 6; // increased spacing
     
-    // Site Contact and Phone Number
+    // Site Contact and Phone Number (COMPACT)
     doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
     doc.setTextColor(45, 55, 70);
-    doc.text('Site Contact:', 20, currentY);
+    doc.text('Site Contact:', 15, currentY);
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(30, 30, 30);
-    doc.text(job.siteContact || job.clientContactName || 'N/A', 20 + 50, currentY);
-    doc.text('Phone Number:', pageWidth / 2 + 10, currentY);
-    doc.text(job.sitePhone || job.clientPhone || 'N/A', pageWidth / 2 + 10 + 50, currentY);
-    currentY += 8;
-    
-    // Equipment
+    doc.text(job.siteContact || job.clientContactName || 'N/A', 15 + 50, currentY);
     doc.setFont('helvetica', 'bold');
+    doc.text('Phone Number:', pageWidth / 2 + 5, currentY);
+    doc.setFont('helvetica', 'normal');
+    doc.text(job.sitePhone || job.clientPhone || 'N/A', pageWidth / 2 + 5 + 50, currentY);
+    currentY += 6; // increased spacing
+    
+    // Equipment (COMPACT)
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
     doc.setTextColor(45, 55, 70);
-    doc.text('Equipment:', 20, currentY);
+    doc.text('Equipment:', 15, currentY);
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(30, 30, 30);
-    doc.text(job.equipment || 'N/A', 20 + 50, currentY);
-    currentY += 8;
+    doc.text(job.equipment || 'N/A', 15 + 50, currentY);
+    currentY += 6; // increased spacing
     
-    // Service Type
+    // Service Type and Serviced By (COMPACT - SAME LINE)
     doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
     doc.setTextColor(45, 55, 70);
-    doc.text('Service Type:', 20, currentY);
+    doc.text('Service Type:', 15, currentY);
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(0, 0, 0); // Black color for service type data
-    doc.text(job.serviceType || job.service_type || 'N/A', 20 + 50, currentY);
-    currentY += 8;
+    doc.text(job.serviceType || job.service_type || 'N/A', 15 + 50, currentY);
     
-    // Fault Reported section with border
-    currentY += 10; // Add space before fault section
+    // Serviced By on the same line
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
+    doc.setTextColor(45, 55, 70);
+    doc.text('Serviced By:', pageWidth / 2 + 5, currentY);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(30, 30, 30);
+    doc.text(technicianName, pageWidth / 2 + 5 + 50, currentY);
+    // Gap between "Serviced By" line and start of Fault Reported
+    currentY += sectionGap;
+    
+    // Fault Reported section with border (COMPACT)
     doc.setFillColor(248, 250, 252); // Very light blue background
-    doc.rect(15, currentY - 5, pageWidth - 30, 25, 'F');
+    // Increase top padding and height to match Action Taken spacing
+    doc.rect(10, currentY - 5, pageWidth - 20, 18, 'F');
     doc.setDrawColor(180, 200, 220); // Blue border
     doc.setLineWidth(0.3);
-    doc.rect(15, currentY - 5, pageWidth - 30, 25);
+    doc.rect(10, currentY - 5, pageWidth - 20, 18);
     
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(45, 55, 70);
@@ -934,21 +944,22 @@ const Jobs: React.FC = () => {
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(30, 30, 30);
     if (job.faultReported) {
-      wrapText(job.faultReported, pageWidth - 40, 20, currentY + 6);
+      wrapText(job.faultReported, pageWidth - 40, 20, currentY + 8);
     } else {
-      doc.text('No fault reported', 20, currentY + 6);
+      doc.text('No fault reported', 20, currentY + 8);
     }
-    currentY += 20;
+    // Move past the Fault Reported box (height 18) plus unified gap
+    currentY += 18 + sectionGap;
     
     // Action Taken section with dynamic height and multi-page support
-    currentY += 10; // Add space before action section
-    const actionBoxLeft = 15;
-    const actionBoxWidth = pageWidth - 30;
+    // Spacing already applied after Fault Reported via sectionGap
+    const actionBoxLeft = 10; // Match Fault Reported border position
+    const actionBoxWidth = pageWidth - 20; // Match Fault Reported border width
     let actionLabelY = currentY;
 
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(45, 55, 70);
-    doc.text('Action Taken:', 20, actionLabelY);
+    doc.text('Action Taken:', 20, actionLabelY); // Keep text at 20px from left edge
 
     // Prepare text
     doc.setFont('helvetica', 'normal');
@@ -961,28 +972,28 @@ const Jobs: React.FC = () => {
     const allLines: string[] = [];
     for (const p of paragraphs) {
       if (p.trim().length === 0) {
-        allLines.push('');
-      } else {
-        const lines = doc.splitTextToSize(p, pageWidth - 40) as string[];
-        allLines.push(...lines);
+        // Skip empty paragraphs to avoid extra blank lines between entries
+        continue;
       }
+      const lines = doc.splitTextToSize(p, pageWidth - 40) as string[];
+      allLines.push(...lines);
     }
 
-    const lineHeight = 8; // generous spacing to avoid overlap
+    const lineHeight = 6; // line height for action text
     let cursorIndex = 0;
     const pageBottom = 250; // keep consistent with parts paging
 
     while (cursorIndex <= allLines.length) {
-      const startY = actionLabelY + 6;
+      const startY = actionLabelY + 8; // match top padding used in Fault Reported
       const available = pageBottom - startY - 5; // leave small padding
       const maxLinesThisPage = Math.max(1, Math.floor(available / lineHeight));
       const endIndexExclusive = Math.min(allLines.length, cursorIndex + maxLinesThisPage);
       const linesThisPage = allLines.slice(cursorIndex, endIndexExclusive);
 
       // Compute box height for this page
-      const contentHeight = Math.max(10, linesThisPage.length * lineHeight);
-      const boxTop = actionLabelY - 5;
-      const boxHeight = Math.max(25, contentHeight + 12);
+      const contentHeight = Math.max(8, linesThisPage.length * lineHeight);
+      const boxTop = actionLabelY - 5; // match Fault Reported top offset
+      const boxHeight = Math.max(20, contentHeight + 14); // match spacing feel with Fault Reported
 
       // Draw background and border for this page section
       doc.setFillColor(248, 250, 252);
@@ -994,14 +1005,14 @@ const Jobs: React.FC = () => {
       // Draw label again (ensures it shows on page splits only once per section)
       doc.setFont('helvetica', 'bold');
       doc.setTextColor(45, 55, 70);
-      doc.text('Action Taken:', 20, actionLabelY);
+      doc.text('Action Taken:', 20, actionLabelY); // Keep text at 20px from left edge
       doc.setFont('helvetica', 'normal');
       doc.setTextColor(30, 30, 30);
 
       // Render lines
       let textY = startY;
       for (const line of linesThisPage) {
-        doc.text(line || ' ', 20, textY);
+        doc.text(line || ' ', 20, textY); // Keep text at 20px from left edge
         textY += lineHeight;
       }
 
@@ -1011,44 +1022,31 @@ const Jobs: React.FC = () => {
         doc.addPage();
         actionLabelY = 20; // top margin on new page
       } else {
-        // Advance currentY to below the box
-        currentY = boxTop + boxHeight + 5;
+        // Advance currentY to below the box with unified gap
+        currentY = boxTop + boxHeight + sectionGap;
         break;
       }
     }
     
-    // Serviced By - no border, moved down 2 lines
-    currentY += 16; // Add 2 lines of spacing (8 pixels per line)
-    doc.setFont('helvetica', 'bold');
-    doc.setTextColor(45, 55, 70);
-    doc.text('Serviced By:', 20, currentY);
-    doc.setFont('helvetica', 'normal');
-    doc.setTextColor(30, 30, 30);
-    doc.text(technicianName, 20 + 50, currentY);
-    currentY += 15;
+    // Serviced By field moved to be next to Service Type above
     
-    // End first page here - move parts to second page
-    // Add page break to move parts to second page
-    doc.addPage();
-    currentY = 20;
-    
-    // Parts/Service table with blue styling - NOW ON PAGE 2
+    // Parts/Service table with blue styling - COMPACT FOR SINGLE PAGE
     // Table header background - dark blue
     doc.setFillColor(45, 55, 70); // Dark blue-gray header background
-    doc.rect(15, currentY - 5, pageWidth - 30, 12, 'F');
+    doc.rect(10, currentY - 3, pageWidth - 20, 8, 'F'); // Much smaller
     
     // Table header border - darker blue
     doc.setDrawColor(30, 40, 55);
     doc.setLineWidth(0.5);
-    doc.rect(15, currentY - 5, pageWidth - 30, 12);
+    doc.rect(10, currentY - 3, pageWidth - 20, 8);
     
-    // Table header text - white on blue
+    // Table header text - white on blue (COMPACT)
     doc.setFontSize(10);
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(255, 255, 255); // White text on blue background
-    doc.text('QTY', 20, currentY);
-    doc.text('Description', 60, currentY);
-    currentY += 10;
+    doc.text('QTY', 15, currentY);
+    doc.text('Service & Materials', 50, currentY);
+    currentY += 6; // Much smaller
     
     // Get parts data
     let parts = [];
@@ -1089,7 +1087,12 @@ const Jobs: React.FC = () => {
     
         // Render parts with professional styling (already on page 2)
         if (parts && parts.length > 0) {
-          parts.forEach((part: any, index: number) => {
+          parts
+            .filter((p:any) => {
+              const qty = Number(p.qty);
+              return !isNaN(qty) && qty > 0;
+            })
+            .forEach((part: any, index: number) => {
             // Check if we need a new page (only if parts are very long)
             if (currentY > 250) { // Leave space for footer
               doc.addPage();
@@ -1106,22 +1109,24 @@ const Jobs: React.FC = () => {
               doc.setFont('helvetica', 'bold');
               doc.setTextColor(255, 255, 255);
               doc.text('QTY', 20, currentY);
-              doc.text('Description', 60, currentY);
+              doc.text('Service & Materials', 60, currentY);
               currentY += 10;
             }
             
-            // Alternating row colors - blue theme
+            // Alternating row colors - blue theme (COMPACT)
             if (index % 2 === 0) {
               doc.setFillColor(248, 250, 252); // Very light blue for even rows
             } else {
               doc.setFillColor(240, 245, 250); // Light blue-gray for odd rows
             }
-            doc.rect(15, currentY - 3, pageWidth - 30, 8, 'F');
+            const rowHeight = 8; // taller row to allow vertical centering
+            const rowTop = currentY - (rowHeight - 3);
+            doc.rect(10, rowTop, pageWidth - 20, rowHeight, 'F'); // adjusted row height
             
             // Row border - blue
             doc.setDrawColor(180, 200, 220);
             doc.setLineWidth(0.2);
-            doc.rect(15, currentY - 3, pageWidth - 30, 8);
+            doc.rect(10, rowTop, pageWidth - 20, rowHeight);
             
             const qty = part.qty || part.quantity || '1';
             const description = part.description || 'Labour';
@@ -1136,39 +1141,45 @@ const Jobs: React.FC = () => {
             });
             
             doc.setFont('helvetica', 'normal');
-            doc.setFontSize(9);
+            doc.setFontSize(10);
             doc.setTextColor(30, 30, 30);
-            doc.text(String(qty), 20, currentY);
-            wrapText(description, 60, 60, currentY);
+            // Center text vertically in row
+            const textY = rowTop + rowHeight / 2 + 2; // better centering at 10pt
+            doc.text(String(qty), 15, textY);
+            wrapText(description, 50, 50, textY);
             
-            currentY += 8;
+            currentY += rowHeight;
           });
         } else {
-          // Default entries if no parts with blue styling
+          // Default entries if no parts with blue styling (COMPACT)
           // Service Call row
           doc.setFillColor(248, 250, 252); // Very light blue
-          doc.rect(15, currentY - 3, pageWidth - 30, 8, 'F');
+          const rowHeight2 = 8;
+          const rowTop2 = currentY - (rowHeight2 - 3);
+          doc.rect(10, rowTop2, pageWidth - 20, rowHeight2, 'F');
           doc.setDrawColor(180, 200, 220); // Blue border
           doc.setLineWidth(0.2);
-          doc.rect(15, currentY - 3, pageWidth - 30, 8);
+          doc.rect(10, rowTop2, pageWidth - 20, rowHeight2);
           
           doc.setFont('helvetica', 'normal');
-          doc.setFontSize(9);
+          doc.setFontSize(10);
           doc.setTextColor(30, 30, 30);
-          doc.text('1', 20, currentY);
-          doc.text('Labour', 60, currentY);
-          currentY += 8;
+          doc.text('1', 15, rowTop2 + rowHeight2 / 2 + 2);
+          doc.text('Labour', 50, rowTop2 + rowHeight2 / 2 + 2);
+          currentY += rowHeight2;
           
           // Labour row
           doc.setFillColor(240, 245, 250); // Light blue-gray
-          doc.rect(15, currentY - 3, pageWidth - 30, 8, 'F');
+          const rowHeight3 = 8;
+          const rowTop3 = currentY - (rowHeight3 - 3);
+          doc.rect(10, rowTop3, pageWidth - 20, rowHeight3, 'F');
           doc.setDrawColor(180, 200, 220); // Blue border
           doc.setLineWidth(0.2);
-          doc.rect(15, currentY - 3, pageWidth - 30, 8);
+          doc.rect(10, rowTop3, pageWidth - 20, rowHeight3);
           
-          doc.text('1', 20, currentY);
-          doc.text('Labour', 60, currentY);
-          currentY += 8;
+          doc.text('1', 15, rowTop3 + rowHeight3 / 2 + 2);
+          doc.text('Labour', 50, rowTop3 + rowHeight3 / 2 + 2);
+          currentY += rowHeight3;
         }
     
     return doc;
@@ -1247,17 +1258,30 @@ const Jobs: React.FC = () => {
       });
     }
     
-    // Search filter - only apply if searchTerm is not empty
-    const searchMatch = searchTerm === '' || 
-      job.title?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      job.description?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (job as any).site_address?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (job as any).equipment?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (job as any).fault_reported?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (job as any).action_taken?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (job as any).order_number?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (job as any).client_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (job as any).end_customer_name?.toLowerCase().includes(searchTerm.toLowerCase());
+    // Search filter - normalize all fields to strings so numbers are matched too
+    const term = (searchTerm || '').toString().trim().toLowerCase();
+    const includes = (v: any) => String(v ?? '').toString().toLowerCase().includes(term);
+    const searchMatch = term === '' ||
+      includes(job.title) ||
+      includes(job.description) ||
+      includes((job as any).site_address) ||
+      includes((job as any).siteAddress) ||
+      includes((job as any).customer_address) ||
+      includes((job as any).equipment) ||
+      includes((job as any).fault_reported) ||
+      includes((job as any).faultReported) ||
+      includes((job as any).action_taken) ||
+      includes((job as any).actionTaken) ||
+      includes((job as any).order_number) ||
+      includes((job as any).orderNumber) ||
+      includes((job as any).client_name) ||
+      includes((job as any).clientName) ||
+      includes((job as any).end_customer_name) ||
+      includes((job as any).endCustomerName) ||
+      includes((job as any).snpid) ||
+      includes((job as any).id) ||
+      includes((job as any).phone) ||
+      includes((job as any).site_phone);
 
     let statusMatch = false;
     if (filter === 'sent_to_customer') {
@@ -1335,7 +1359,7 @@ const Jobs: React.FC = () => {
           <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between space-y-4 lg:space-y-0 lg:space-x-6">
             {/* Status Filters */}
             <div className="flex space-x-2">
-              {['pending', 'in_progress', 'completed', 'sent_to_customer'].map((status) => (
+              {['pending', 'in_progress', 'completed', 'sent_to_customer', 'cancelled'].map((status) => (
               <button
                 key={status}
                 onClick={async () => {
@@ -1369,19 +1393,7 @@ const Jobs: React.FC = () => {
             ))}
           </div>
           
-          {/* Manual Refresh Button - Temporary for debugging */}
-          <button
-            onClick={async () => {
-              console.log('🔄 ===== MANUAL REFRESH BUTTON CLICKED =====');
-              console.log('🔄 Manual refresh button clicked...');
-              // Jobs will update automatically via real-time listener
-              console.log('🔄 Manual refresh completed');
-            }}
-            className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-md transition-colors flex items-center gap-2"
-            title="Refresh jobs data"
-          >
-            🔄 Manual Refresh
-          </button>
+          {/* Manual Refresh Button removed */}
           
           {/* Service Type Filter - Only show for completed jobs or sent to customer */}
           {(filter === 'completed' || filter === 'sent_to_customer') && (
@@ -1472,12 +1484,30 @@ const Jobs: React.FC = () => {
                     )}
                     <div className="flex-1">
                     <h3 className="text-white font-medium flex items-center gap-2">
-                      <span className="px-2 py-0.5 rounded bg-slate-600 text-xs text-white">Service Report Number {(job as any).snpid || job.id}</span>
+                      <span className="px-2 py-0.5 rounded bg-emerald-600 text-xs text-white">Service Report Number {(job as any).snpid || job.id}</span>
                     </h3>
-                    <p className="text-slate-300 text-sm mt-1">Order Number: {(job as any).order_number || (job as any).orderNumber || '—'}</p>
+                    <p className="text-emerald-400 text-sm mt-1">Order Number: {(job as any).order_number || (job as any).orderNumber || '—'}</p>
                     <p className="text-slate-300 text-sm">Service Type: {(job as any).service_type || (job as any).serviceType || '—'}</p>
                     <p className="text-slate-300 text-sm">{(job as any).site_address || (job as any).siteAddress || 'Site address not set'}</p>
                     <p className="text-slate-300 text-sm">Equipment: {(job as any).equipment || '—'} • Fault: {(job as any).fault_reported || (job as any).faultReported || '—'}</p>
+                    {job.status === 'completed' && (
+                      <p className="text-emerald-400 text-sm mt-1">
+                        <span className="text-emerald-300">Parts:</span> {(() => {
+                          try {
+                            let parts: any[] = [];
+                            if ((job as any).parts_json) parts = JSON.parse((job as any).parts_json);
+                            else if ((job as any).partsJson) parts = JSON.parse((job as any).partsJson);
+                            else if ((job as any).parts) parts = (job as any).parts;
+                            const items = (Array.isArray(parts) ? parts : [])
+                              .filter((p: any) => Number(p.qty) > 0)
+                              .map((p: any) => `${p.qty} x ${p.description || 'Item'}`);
+                            return items.length ? items.join(', ') : '—';
+                          } catch {
+                            return '—';
+                          }
+                        })()}
+                      </p>
+                    )}
                     {job.status !== 'completed' && (
                       <p className="text-slate-300 text-sm mt-2">Requested: {(job as any).requested_date || (job as any).requestedDate || '—'} • Due: {(job as any).due_date || (job as any).dueDate || '—'}</p>
                     )}
@@ -1923,13 +1953,17 @@ const Jobs: React.FC = () => {
                           
                           {/* Quantity Controls */}
                           <div className="flex items-center bg-slate-600 rounded-md">
+                            {/** Determine if this line represents Labour; if so use 0.5 step increments */}
+                            {(() => { return null; })()}
                             <button 
                               type="button"
                               onClick={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
                                 console.log('🔍 Minus button clicked for part', idx, 'current qty:', p.qty);
-                                updatePartQuantity(idx, p.qty - 1);
+                                const isLabour = /labou?r/i.test(parts[idx].description || '');
+                                const step = isLabour ? 0.5 : 1;
+                                updatePartQuantity(idx, Math.max(0, Number((p.qty - step).toFixed(2))));
                               }}
                               className="px-2 py-2 text-white hover:bg-slate-500 rounded-l-md text-sm"
                               disabled={p.qty <= 0}
@@ -1939,9 +1973,16 @@ const Jobs: React.FC = () => {
                             <input 
                               type="number" 
                               value={p.qty} 
-                              onChange={(e) => updatePartQuantity(idx, Number(e.target.value) || 0)}
+                              onChange={(e) => {
+                                const isLabour = /labou?r/i.test(parts[idx].description || '');
+                                const step = isLabour ? 0.5 : 1;
+                                const raw = Number(e.target.value);
+                                const snapped = isNaN(raw) ? 0 : Math.round(raw / step) * step;
+                                updatePartQuantity(idx, Math.max(0, Number(snapped.toFixed(2))));
+                              }}
                               className="w-12 bg-transparent text-white text-center px-1 py-2 border-0 focus:outline-none text-sm"
                               min="0"
+                              step={/labou?r/i.test(p.description || '') ? 0.5 : 1}
                             />
                             <button
                               type="button"
@@ -1949,7 +1990,9 @@ const Jobs: React.FC = () => {
                                 e.preventDefault();
                                 e.stopPropagation();
                                 console.log('🔍 Plus button clicked for part', idx, 'current qty:', p.qty);
-                                updatePartQuantity(idx, p.qty + 1);
+                                const isLabour = /labou?r/i.test(parts[idx].description || '');
+                                const step = isLabour ? 0.5 : 1;
+                                updatePartQuantity(idx, Number((p.qty + step).toFixed(2)));
                               }}
                               className="px-2 py-2 text-white hover:bg-slate-500 rounded-r-md text-sm"
                             >
