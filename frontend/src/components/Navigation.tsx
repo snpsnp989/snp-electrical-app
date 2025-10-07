@@ -10,13 +10,11 @@ interface NavigationProps {
 
 const Navigation: React.FC<NavigationProps> = ({ activeTab, setActiveTab, onLogout, userName, userRole }) => {
   const menuItems = [
-    { id: 'dashboard', label: 'Dashboard', icon: '📊' },
     { id: 'jobs', label: 'Jobs', icon: '🔧' },
     { id: 'customers', label: 'Clients', icon: '🏢' },
     { id: 'technicians', label: 'Users', icon: '👥' },
     { id: 'parts', label: 'Parts', icon: '🧩' },
-    { id: 'equipment', label: 'Equipment', icon: '⚙️' },
-    { id: 'reports', label: 'Reports', icon: '📄' }
+    { id: 'equipment', label: 'Equipment', icon: '⚙️' }
   ];
 
   return (
