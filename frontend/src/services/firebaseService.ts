@@ -19,14 +19,20 @@ import { db } from '../firebase';
 // Transaction-safe sequential Service Report Number generator
 async function getNextServiceReportNumber(): Promise<number> {
   const counterRef = doc(db, 'meta', 'serviceReport');
+  const START_AT = 2440; // First generated Service Report Number
   const next = await runTransaction(db, async (tx) => {
     const snap = await tx.get(counterRef);
     if (!snap.exists()) {
-      // Initialize at 1 if absent; you can change this doc's `next` later to start from any number
-      tx.set(counterRef, { next: 2 });
-      return 1;
+      // Initialize the counter so the first number issued is START_AT
+      tx.set(counterRef, { next: START_AT + 1 });
+      return START_AT;
     }
-    const current = (snap.data() as any).next ?? 1;
+    let current = (snap.data() as any).next ?? 1;
+    // If the stored counter is behind our required starting point, bump it up
+    if (current < START_AT) {
+      tx.update(counterRef, { next: START_AT + 1 });
+      return START_AT;
+    }
     tx.update(counterRef, { next: current + 1 });
     return current;
   });
