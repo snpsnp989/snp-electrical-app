@@ -30,6 +30,9 @@ const Clients: React.FC = () => {
   const [showAddCustomerFor, setShowAddCustomerFor] = useState<string | null>(null);
   const [showAddSiteFor, setShowAddSiteFor] = useState<{ clientId: string; customerId: string } | null>(null);
   const [showImportSites, setShowImportSites] = useState(false);
+  const [importTargetClientId, setImportTargetClientId] = useState<string>('auto');
+  const [importTargetCustomerId, setImportTargetCustomerId] = useState<string>('auto');
+  const [showImportSitesFor, setShowImportSitesFor] = useState<{ clientId: string; customerId: string } | null>(null);
 
   useEffect(() => { 
     refresh(); 
@@ -65,7 +68,7 @@ const Clients: React.FC = () => {
     setLoading(false);
   };
 
-  const importSites = async (file: File) => {
+  const importSites = async (file: File, targetClientId?: string, targetCustomerId?: string) => {
     let importedCount = 0;
     let skippedCount = 0;
     
@@ -115,7 +118,7 @@ const Clients: React.FC = () => {
       const phoneIdx = getColumnIndex(['Phone', 'Phone Number', 'Contact Phone', 'Telephone', 'Mobile']);
       
       // If no client/end customer columns found, use defaults
-      if (clientNameIdx === -1 && endCustomerNameIdx === -1) {
+      if (!targetClientId && !targetCustomerId && clientNameIdx === -1 && endCustomerNameIdx === -1) {
         const foundColumns = header.map((col: string, idx: number) => `${idx + 1}. ${col}`).join('\n');
         alert(`No client or end customer columns found.\n\nFound columns:\n${foundColumns}\n\nUsing default values: Client="Australian Digital Security", End Customer="Homes Victoria"`);
       }
@@ -123,8 +126,8 @@ const Clients: React.FC = () => {
       for (const row of rows) {
         if (row.length < 3) continue;
         
-        const clientName = clientNameIdx !== -1 ? row[clientNameIdx]?.toString().trim() : 'Australian Digital Security';
-        const endCustomerName = endCustomerNameIdx !== -1 ? row[endCustomerNameIdx]?.toString().trim() : 'Homes Victoria';
+        const clientName = targetClientId ? '' : (clientNameIdx !== -1 ? row[clientNameIdx]?.toString().trim() : 'Australian Digital Security');
+        const endCustomerName = targetCustomerId ? '' : (endCustomerNameIdx !== -1 ? row[endCustomerNameIdx]?.toString().trim() : 'Homes Victoria');
         const siteName = siteNameIdx !== -1 ? row[siteNameIdx]?.toString().trim() : '';
         const address = row[addressIdx]?.toString().trim() || '';
         const suburb = row[suburbIdx]?.toString().trim() || '';
@@ -137,12 +140,14 @@ const Clients: React.FC = () => {
         if (row.length < 2) continue;
         
         try {
-          // Find or create client
-          let client = clients.find(c => c.name.toLowerCase() === clientName.toLowerCase());
+          // Resolve target client (fixed selection overrides file)
+          let client = targetClientId
+            ? clients.find(c => c.id === targetClientId)
+            : clients.find(c => c.name.toLowerCase() === clientName.toLowerCase());
           if (!client) {
             // Create new client
             const clientId = await createClient({
-              name: clientName,
+              name: clientName || 'Unnamed Client',
               contact_name: contact || '',
               email: '',
               phone: phone || '',
@@ -155,11 +160,13 @@ const Clients: React.FC = () => {
             client = { id: clientId, name: clientName };
           }
           
-          // Find or create end customer
-          let endCustomer = client.customers?.find(ec => ec.name.toLowerCase() === endCustomerName.toLowerCase());
+          // Resolve target end-customer (fixed selection overrides file)
+          let endCustomer = targetCustomerId
+            ? client.customers?.find(ec => ec.id === targetCustomerId)
+            : client.customers?.find(ec => ec.name.toLowerCase() === endCustomerName.toLowerCase());
           if (!endCustomer) {
             const customerId = await createEndCustomer(client.id, {
-              name: endCustomerName,
+              name: endCustomerName || 'Unnamed End-Customer',
               contact_name: contact || '',
               email: '',
               phone: phone || '',
@@ -538,6 +545,7 @@ const Clients: React.FC = () => {
                           <div className="text-gray-400 text-sm">{cust.contact_name || 'No contact'} • {(cust.sites || []).length} site{(cust.sites || []).length === 1 ? '' : 's'}</div>
                         </div>
                         <div className="flex gap-2">
+                          <button onClick={() => setShowImportSitesFor({ clientId: cl.id, customerId: cust.id })} className="bg-green-700 hover:bg-green-800 text-white px-3 py-1 rounded-md text-sm">Import Sites</button>
                           <button onClick={() => setShowAddSiteFor({ clientId: cl.id, customerId: cust.id })} className="bg-darker-blue hover:bg-blue-700 text-white px-3 py-1 rounded-md text-sm">Add Site</button>
                           <button onClick={() => editCustomer(cl.id, cust)} className="bg-gray-600 hover:bg-gray-700 text-white px-3 py-1 rounded-md text-sm">Edit</button>
                           <button onClick={() => disableCustomer(cl.id, cust.id)} className={`px-3 py-1 rounded-md text-sm ${
@@ -695,6 +703,36 @@ const Clients: React.FC = () => {
         </div>
       )}
 
+      {/* Import Sites for specific End-Customer */}
+      {showImportSitesFor && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-gray-800 rounded-lg p-6 w-full max-w-md">
+            <h2 className="text-xl font-semibold text-white mb-4">Import Sites to End-Customer</h2>
+            <div className="text-gray-300 text-sm mb-3">All rows will be added under this End-Customer. Columns supported: Site Name, Address, Suburb, State, Postcode, Contact, Phone.</div>
+            <input
+              type="file"
+              accept=".xlsx,.txt,.iif"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) {
+                  importSites(file, showImportSitesFor.clientId, showImportSitesFor.customerId);
+                  setShowImportSitesFor(null);
+                }
+              }}
+              className="w-full bg-gray-700 text-white px-3 py-2 rounded-md mb-4"
+            />
+            <div className="flex space-x-3">
+              <button
+                onClick={() => setShowImportSitesFor(null)}
+                className="flex-1 bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded-md transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Edit End Customer Modal */}
       {editingCustomer && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -801,13 +839,44 @@ const Clients: React.FC = () => {
                 <div className="text-gray-400 text-xs mt-2">If Site Name is blank, it will use Address + Suburb or "Unnamed Site"</div>
               </div>
             </div>
+            {/* Fixed target selection */}
+            <div className="mb-4 space-y-2">
+              <label className="block text-sm text-gray-300">Target Client (optional)</label>
+              <select
+                className="w-full bg-gray-700 text-white px-3 py-2 rounded-md"
+                value={importTargetClientId}
+                onChange={(e)=>{
+                  setImportTargetClientId(e.target.value);
+                  setImportTargetCustomerId('auto');
+                }}
+              >
+                <option value="auto">Use Client column from file</option>
+                {clients.map(cl => (
+                  <option key={cl.id} value={cl.id}>{cl.name}</option>
+                ))}
+              </select>
+              <label className="block text-sm text-gray-300">Target End-Customer (optional)</label>
+              <select
+                className="w-full bg-gray-700 text-white px-3 py-2 rounded-md"
+                value={importTargetCustomerId}
+                onChange={(e)=>setImportTargetCustomerId(e.target.value)}
+                disabled={importTargetClientId === 'auto'}
+              >
+                <option value="auto">Use End-Customer column from file</option>
+                {(clients.find(c=>c.id===importTargetClientId)?.customers || []).map((ec:any)=> (
+                  <option key={ec.id} value={ec.id}>{ec.name}</option>
+                ))}
+              </select>
+            </div>
             <input
               type="file"
               accept=".xlsx,.txt,.iif"
               onChange={(e) => {
                 const file = e.target.files?.[0];
                 if (file) {
-                  importSites(file);
+                  const fixedClient = importTargetClientId !== 'auto' ? importTargetClientId : undefined;
+                  const fixedCustomer = importTargetCustomerId !== 'auto' ? importTargetCustomerId : undefined;
+                  importSites(file, fixedClient, fixedCustomer);
                   setShowImportSites(false);
                 }
               }}
